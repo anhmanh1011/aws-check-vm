@@ -101,3 +101,23 @@ def test_from_file_only_comments_warns_and_is_empty(tmp_path: Path, caplog):
     manager = ProxyManager.from_file(path)
     assert len(manager) == 0
     assert "no proxies" in caplog.text.lower()
+
+
+def test_parse_malformed_line_with_credentials_does_not_leak_them():
+    with pytest.raises(ValueError) as excinfo:
+        parse_proxy_line("http://alice:s3cret@1.2.3.4:notaport")
+    error_text = str(excinfo.value)
+    assert "s3cret" not in error_text
+    assert "alice" not in error_text
+    assert "***:***@1.2.3.4:notaport" in error_text
+
+
+def test_from_file_error_does_not_leak_credentials(tmp_path: Path):
+    path = tmp_path / "proxies.txt"
+    path.write_text("http://alice:s3cret@1.2.3.4\n", encoding="utf-8")
+    with pytest.raises(ValueError) as excinfo:
+        ProxyManager.from_file(path)
+    error_text = str(excinfo.value)
+    assert "proxies.txt:1" in error_text
+    assert "***:***" in error_text
+    assert "s3cret" not in error_text

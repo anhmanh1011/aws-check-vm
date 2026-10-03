@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -33,6 +34,12 @@ from models import Proxy
 log = logging.getLogger(__name__)
 
 SUPPORTED_SCHEMES = frozenset({"http", "https", "socks4", "socks5"})
+_CREDENTIALS_RE = re.compile(r"://[^/@\s]+@")
+
+
+def _redact(line: str) -> str:
+    """Replace credentials in proxy URL with placeholder for safe error messages."""
+    return _CREDENTIALS_RE.sub("://***:***@", line)
 
 
 def parse_proxy_line(line: str) -> Proxy | None:
@@ -49,17 +56,17 @@ def parse_proxy_line(line: str) -> Proxy | None:
     parts = urlsplit(stripped)
     if parts.scheme not in SUPPORTED_SCHEMES:
         raise ValueError(
-            f"unsupported proxy scheme {parts.scheme!r} in {stripped!r} "
+            f"unsupported proxy scheme {parts.scheme!r} in {_redact(stripped)!r} "
             f"(expected one of {sorted(SUPPORTED_SCHEMES)})"
         )
     if not parts.hostname:
-        raise ValueError(f"missing host in proxy {stripped!r}")
+        raise ValueError(f"missing host in proxy {_redact(stripped)!r}")
     try:
         port = parts.port
     except ValueError as exc:
-        raise ValueError(f"invalid port in proxy {stripped!r}") from exc
+        raise ValueError(f"invalid port in proxy {_redact(stripped)!r}") from exc
     if port is None:
-        raise ValueError(f"missing port in proxy {stripped!r}")
+        raise ValueError(f"missing port in proxy {_redact(stripped)!r}")
 
     # Credentials may be percent-encoded (e.g. ``user%40corp``); Playwright
     # wants the decoded form.
