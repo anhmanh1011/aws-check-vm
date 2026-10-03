@@ -124,3 +124,31 @@ async def test_non_dict_handler_return_is_wrapped(local_server):
     (result,) = await engine.run()
     assert result.status == "ok"
     assert result.data == {"value": "plain string"}
+
+
+async def test_unexpected_worker_error_cancels_siblings_and_closes_browser(
+    local_server, monkeypatch
+):
+    # ``_run_one`` is the one place that already converts failures into data;
+    # bypassing it here simulates a bug that lets an exception escape a
+    # worker, which is exactly the path ``asyncio.TaskGroup`` must handle by
+    # cancelling the other workers before the browser is closed.
+    original_run_one = AutomationEngine._run_one
+
+    async def crashing_run_one(self, worker_id, task, proxy, browser):
+        if task.id == 1:
+            raise RuntimeError("worker crashed")
+        return await original_run_one(self, worker_id, task, proxy, browser)
+
+    monkeypatch.setattr(AutomationEngine, "_run_one", crashing_run_one)
+
+    engine, _ = _engine(_tasks(local_server, 4), concurrency=2)
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        await engine.run()
+
+    runtime_errors = [
+        exc for exc in exc_info.value.exceptions if isinstance(exc, RuntimeError)
+    ]
+    assert len(runtime_errors) == 1
+    assert str(runtime_errors[0]) == "worker crashed"

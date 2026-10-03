@@ -92,13 +92,24 @@ class AutomationEngine:
                 self._browser_type, self._headless, self._concurrency, len(self._tasks),
             )
             try:
-                await asyncio.gather(
-                    *(self._worker(worker_id, queue, browser)
-                      for worker_id in range(1, self._concurrency + 1))
-                )
+                # WHY TaskGroup, not gather: if one worker raises, TaskGroup
+                # cancels every sibling task and waits for them before
+                # propagating, so the browser is never closed out from under a
+                # still-running worker. ``asyncio.gather`` would instead let
+                # the other workers keep executing concurrently with the
+                # ``finally`` block's ``browser.close()`` below, racing their
+                # ``new_context``/``goto`` calls against a driver that is
+                # being torn down.
+                async with asyncio.TaskGroup() as group:
+                    for worker_id in range(1, self._concurrency + 1):
+                        group.create_task(self._worker(worker_id, queue, browser))
             finally:
-                # Runs on success, on error, and on cancellation (Ctrl+C), so the
-                # browser process never outlives the Python process.
+                # Closes the browser on success, on error (after TaskGroup has
+                # finished cancelling and awaiting every worker), and on
+                # cancellation (Ctrl+C). Chromium also dies on its own when the
+                # Playwright driver process exits at the end of the
+                # ``async_playwright()`` context, but closing it explicitly
+                # here keeps teardown deterministic and immediate.
                 await browser.close()
 
         return list(self._state.results)
