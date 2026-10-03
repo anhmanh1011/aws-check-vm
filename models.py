@@ -63,7 +63,8 @@ class Proxy:
         # real, unmasked credential pair verbatim alongside our ``***:***``.
         # Rebuilding from ``hostname``/``port`` drops any such embedded
         # credentials unconditionally.
-        return f"{parts.scheme}://***:***@{parts.hostname}:{parts.port}"
+        host = parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
+        return f"{parts.scheme}://***:***@{host}"
 
 
 @dataclass(slots=True)

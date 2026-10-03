@@ -189,8 +189,7 @@ class AutomationEngine:
             handler_task = asyncio.create_task(self._handler(page, task))
             try:
                 data = await asyncio.wait_for(handler_task, timeout=self._timeout_s)
-                status = "ok"
-            except TimeoutError as exc:
+            except TimeoutError:
                 # WHY this isn't just ``except asyncio.TimeoutError``: on
                 # Python 3.11+ ``asyncio.TimeoutError is TimeoutError``, so a
                 # handler that raises a *builtin* ``TimeoutError`` of its own
@@ -204,16 +203,23 @@ class AutomationEngine:
                     status, error = "timeout", f"handler exceeded {self._timeout_s}s"
                 else:
                     # The handler raised its own TimeoutError before the
-                    # deadline; this is a handler failure, not an overrun.
-                    status, error = "failed", f"{type(exc).__name__}: {exc}"
-            except Exception as exc:  # noqa: BLE001
-                # WHY broad: Playwright raises several classes (Error, TimeoutError,
-                # TargetClosedError) and a dead proxy surfaces as a navigation
-                # Error. All of them must be recorded, none may kill the worker.
-                # CancelledError is a BaseException and is deliberately NOT caught,
-                # so Ctrl+C still propagates.
-                status = "failed"
-                error = f"{type(exc).__name__}: {exc}"
+                    # deadline; re-raise so the outer ``except Exception``
+                    # below records it like any other handler failure.
+                    raise
+            else:
+                status = "ok"
+        except Exception as exc:  # noqa: BLE001
+            # WHY broad, and WHY this covers new_context/new_page too: Playwright
+            # raises several classes (Error, TimeoutError, TargetClosedError) from
+            # context/page setup as well as from the handler -- a proxy Playwright
+            # rejects or a mid-run TargetClosedError at ``new_context`` must be
+            # recorded exactly like a handler failure, never crash the worker (and
+            # from there the whole TaskGroup). A dead proxy surfaces as a
+            # navigation Error. All of them must be recorded, none may kill the
+            # worker. CancelledError is a BaseException and is deliberately NOT
+            # caught, so Ctrl+C still propagates.
+            status = "failed"
+            error = f"{type(exc).__name__}: {exc}"
         finally:
             if context is not None:
                 try:

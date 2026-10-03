@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from playwright.async_api import Browser
 
 from engine import AutomationEngine
 from handlers import fetch_ip
@@ -121,6 +122,37 @@ async def test_unreachable_proxy_is_recorded_as_failure(local_server):
     # text either, not just into the masked proxy field.
     assert all("s3cret" not in (r.error or "") and "alice" not in (r.error or "") for r in results)
     assert state.completed == 2
+
+
+async def test_context_creation_failure_is_recorded_not_raised(local_server, monkeypatch):
+    # A RuntimeError from browser.new_context() (e.g. a proxy Playwright
+    # rejects, or a mid-run TargetClosedError) must be recorded as a failed
+    # TaskResult for that one task, not propagate out of _run_one -- an
+    # escape there would reach the TaskGroup and cancel every sibling,
+    # aborting the whole run over a single context-creation failure.
+    original_new_context = Browser.new_context
+    calls = {"n": 0}
+
+    async def fake_new_context(self, *args, **kwargs):
+        # Single-threaded asyncio: no await happens between the increment
+        # and the check, so this is race-free without a lock.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("new_context boom")
+        return await original_new_context(self, *args, **kwargs)
+
+    monkeypatch.setattr(Browser, "new_context", fake_new_context)
+
+    engine, state = _engine(_tasks(local_server, 3), concurrency=2)
+    results = await engine.run()
+
+    assert len(results) == 3
+    failed = [r for r in results if r.status == "failed"]
+    ok = [r for r in results if r.status == "ok"]
+    assert len(failed) == 1
+    assert failed[0].error == "RuntimeError: new_context boom"
+    assert len(ok) == 2
+    assert state.completed == 3
 
 
 async def test_contexts_do_not_share_cookies(local_server):

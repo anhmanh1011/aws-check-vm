@@ -34,6 +34,11 @@ def test_proxy_masked_does_not_leak_credentials_embedded_in_server():
     assert proxy.masked() == "http://***:***@1.2.3.4:8080"
 
 
+def test_proxy_masked_without_port_omits_trailing_none():
+    proxy = Proxy(server="http://1.2.3.4", username="u", password="p")
+    assert proxy.masked() == "http://***:***@1.2.3.4"
+
+
 def test_task_is_frozen():
     task = Task(id=1, url="https://example.com", name="example")
     try:
