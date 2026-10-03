@@ -60,6 +60,37 @@ def test_bad_handler_exits_2(tmp_path: Path, capsys):
     assert "module:function" in capsys.readouterr().err
 
 
+def test_bad_output_extension_exits_2_before_running(tmp_path: Path, capsys):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
+    code = main([
+        "--tasks", str(tasks),
+        "--output", str(tmp_path / "results.xml"),
+        "--no-dashboard",
+    ])
+    assert code == 2
+    assert "unsupported output extension" in capsys.readouterr().err
+
+
+def test_unwritable_output_path_exits_1_with_message(tmp_path: Path, capsys, monkeypatch):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
+
+    def _boom(results, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("main.write_results", _boom)
+    monkeypatch.setattr("main.asyncio.run", lambda coro: coro.close())
+
+    code = main([
+        "--tasks", str(tasks),
+        "--output", str(tmp_path / "results.json"),
+        "--no-dashboard",
+    ])
+    assert code == 1
+    assert "could not write results" in capsys.readouterr().err
+
+
 @pytest.mark.integration
 @pytest.mark.usefixtures("require_chromium")
 def test_cli_end_to_end_json(local_server, tmp_path: Path):

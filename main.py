@@ -84,11 +84,24 @@ async def run_async(engine: AutomationEngine, dashboard: Dashboard | None) -> li
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Parse args, run the engine, and write results.
+
+    Exit codes: 0 all tasks ok, 1 some task failed (or the browser could not
+    launch, or results could not be written), 2 bad input, 130 interrupted
+    with Ctrl+C.
+    """
     args = build_parser().parse_args(argv)
     use_dashboard = not args.no_dashboard
     setup_logging(verbose=args.verbose, dashboard_active=use_dashboard)
 
     try:
+        # Checked up front, before the (possibly long) browser run, so a
+        # typo'd --output extension fails fast instead of burning a whole
+        # run only to crash on the final write.
+        if args.output.suffix.lower() not in {".json", ".csv"}:
+            raise ValueError(
+                f"unsupported output extension {args.output.suffix!r} (use .json or .csv)"
+            )
         tasks = load_tasks(args.tasks)
         proxy_manager = ProxyManager.from_file(args.proxies)
         handler = load_handler(args.handler)
@@ -121,7 +134,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Partial results are still valuable after an interrupt or a crash.
     results = state.results
-    write_results(results, args.output)
+    try:
+        write_results(results, args.output)
+    except (OSError, ValueError) as exc:
+        print(f"error: could not write results to {args.output}: {exc}", file=sys.stderr)
+        if exit_code == 0:
+            exit_code = 1
     failed = sum(1 for result in results if result.status != "ok")
     print(f"{len(results)}/{len(tasks)} tasks finished, {failed} failed -> {args.output}")
 
