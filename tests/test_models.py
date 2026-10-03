@@ -40,9 +40,9 @@ def test_proxy_masked_without_port_omits_trailing_none():
 
 
 def test_task_is_frozen():
-    task = Task(id=1, url="https://example.com", name="example")
+    task = Task(id=1, lines=("https://example.com",), name="example")
     try:
-        task.url = "https://other"  # type: ignore[misc]
+        task.lines = ("https://other",)  # type: ignore[misc]
     except AttributeError:
         return
     raise AssertionError("Task should be immutable")
@@ -68,7 +68,7 @@ def test_run_state_collections_are_not_shared_between_instances():
     b = RunState(total=1)
     a.results.append(
         TaskResult(
-            task_id=1, name="n", url="u", worker_id=1, proxy=None, status="ok",
+            task_id=1, name="n", inputs=["u"], worker_id=1, proxy=None, status="ok",
             started_at="2026-01-01T00:00:00+00:00", duration_s=0.1, data={}, error=None,
         )
     )

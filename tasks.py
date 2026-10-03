@@ -1,75 +1,79 @@
-"""Load tasks from ``tasks.txt`` (one URL per line) or ``tasks.json``.
+"""Turn an input file into batches of work.
 
-WHY two formats: a plain text file is the fastest way to try the tool, while
-JSON lets a task carry a friendly ``name`` (and, if you extend the framework,
-any extra parameters your handler needs). Both produce the same ``Task``
-objects, so nothing downstream cares which one was used.
+The input file is plain text: one data item per line (an email, a URL, an
+account ID, ...). Blank lines and ``#`` comments are ignored. The framework
+never interprets the content; your flow receives the raw lines in
+``task.lines`` and decides which site to open and what to click.
+
+WHY batches: opening a fresh browser context per item is the most isolated
+option, but when one flow can process several items in a row (log in once,
+then handle ten emails) it is wasteful. ``--batch-size`` groups lines so one
+context handles one batch:
+
+* ``1``  (default)  one line per context, maximum isolation.
+* ``N``             fixed batches of N lines; the queue hands batches to
+                    whichever worker is free, so 1000 lines with N=10 become
+                    100 batches spread over ``--concurrency`` workers.
+* ``0``  (auto)     split evenly so every worker gets exactly one batch of
+                    ``ceil(total / concurrency)`` lines.
 """
 
 from __future__ import annotations
 
-import json
+import math
 from pathlib import Path
 
 from models import Task
 
 
-def load_tasks(path: Path) -> list[Task]:
-    """Read a task file and return 1-indexed ``Task`` objects.
+def load_lines(path: Path) -> list[str]:
+    """Read the input file and return its non-empty, non-comment lines.
 
-    Raises ``FileNotFoundError`` if the file is missing and ``ValueError`` for
-    an unsupported extension, malformed content, or an empty task list.
+    Raises ``FileNotFoundError`` if the file is missing and ``ValueError`` if
+    no usable lines remain.
     """
     if not path.exists():
-        raise FileNotFoundError(f"task file not found: {path}")
+        raise FileNotFoundError(f"input file not found: {path}")
 
-    text = path.read_text(encoding="utf-8")
-    suffix = path.suffix.lower()
-    if suffix == ".txt":
-        entries = _parse_txt(text)
-    elif suffix == ".json":
-        entries = _parse_json(text)
-    else:
-        raise ValueError(f"unsupported task file type {suffix!r} (use .txt or .json)")
+    lines: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            lines.append(stripped)
 
-    if not entries:
-        raise ValueError(f"no tasks found in {path}")
-
-    return [
-        Task(id=index, url=url, name=name)
-        for index, (url, name) in enumerate(entries, start=1)
-    ]
+    if not lines:
+        raise ValueError(f"no input lines found in {path}")
+    return lines
 
 
-def _parse_txt(text: str) -> list[tuple[str, str]]:
-    """One URL per line; blank lines and ``#`` comments are ignored."""
-    entries: list[tuple[str, str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        entries.append((stripped, stripped))
-    return entries
+def chunk_lines(lines: list[str], *, batch_size: int, concurrency: int) -> list[list[str]]:
+    """Group ``lines`` into batches; see the module docstring for the modes.
+
+    ``batch_size=0`` means auto: ``ceil(len(lines) / concurrency)`` per batch,
+    which yields at most ``concurrency`` batches and never an empty one.
+    """
+    if batch_size < 0:
+        raise ValueError(f"batch_size must be >= 0, got {batch_size}")
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be >= 1, got {concurrency}")
+
+    if batch_size == 0:
+        batch_size = max(1, math.ceil(len(lines) / concurrency))
+
+    return [lines[i:i + batch_size] for i in range(0, len(lines), batch_size)]
 
 
-def _parse_json(text: str) -> list[tuple[str, str]]:
-    """A JSON list of URL strings or ``{"url": ..., "name"?: ...}`` objects."""
-    try:
-        raw = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON in task file: {exc}") from exc
-    if not isinstance(raw, list):
-        raise ValueError("task JSON must be a list of URLs or objects with a 'url' key")
+def make_tasks(batches: list[list[str]]) -> list[Task]:
+    """Wrap each batch in a 1-indexed ``Task`` with a dashboard-friendly name."""
+    tasks: list[Task] = []
+    for index, batch in enumerate(batches, start=1):
+        name = batch[0] if len(batch) == 1 else f"{batch[0]} (+{len(batch) - 1} more)"
+        tasks.append(Task(id=index, lines=tuple(batch), name=name))
+    return tasks
 
-    entries: list[tuple[str, str]] = []
-    for index, item in enumerate(raw, start=1):
-        if isinstance(item, str):
-            entries.append((item, item))
-        elif isinstance(item, dict) and isinstance(item.get("url"), str):
-            url = item["url"]
-            entries.append((url, str(item.get("name") or url)))
-        else:
-            raise ValueError(
-                f"task #{index} must be a URL string or an object with a string 'url' key"
-            )
-    return entries
+
+def load_tasks(path: Path, *, batch_size: int = 1, concurrency: int = 1) -> list[Task]:
+    """Read ``path`` and return batched ``Task`` objects ready for the engine."""
+    lines = load_lines(path)
+    batches = chunk_lines(lines, batch_size=batch_size, concurrency=concurrency)
+    return make_tasks(batches)

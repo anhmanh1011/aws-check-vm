@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def test_parser_defaults():
     args = build_parser().parse_args([])
-    assert args.tasks == Path("tasks.txt")
+    assert args.input == Path("input.txt")
+    assert args.batch_size == 1
     assert args.proxies == Path("proxies.txt")
     assert args.concurrency == 3
     assert args.headless is True
@@ -37,35 +38,41 @@ def test_parser_rejects_zero_concurrency():
         build_parser().parse_args(["--concurrency", "0"])
 
 
-def test_missing_task_file_exits_2(tmp_path: Path, capsys):
-    code = main(["--tasks", str(tmp_path / "nope.txt"), "--no-dashboard"])
+def test_parser_accepts_zero_batch_size_as_auto_but_rejects_negative():
+    assert build_parser().parse_args(["--batch-size", "0"]).batch_size == 0
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--batch-size", "-1"])
+
+
+def test_missing_input_file_exits_2(tmp_path: Path, capsys):
+    code = main(["--input", str(tmp_path / "nope.txt"), "--no-dashboard"])
     assert code == 2
-    assert "task file not found" in capsys.readouterr().err
+    assert "input file not found" in capsys.readouterr().err
 
 
 def test_bad_proxy_line_exits_2(tmp_path: Path, capsys):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
     proxies = tmp_path / "proxies.txt"
     proxies.write_text("ftp://nope:21\n", encoding="utf-8")
-    code = main(["--tasks", str(tasks), "--proxies", str(proxies), "--no-dashboard"])
+    code = main(["--input", str(tasks), "--proxies", str(proxies), "--no-dashboard"])
     assert code == 2
     assert "proxies.txt:1" in capsys.readouterr().err
 
 
 def test_bad_handler_exits_2(tmp_path: Path, capsys):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
-    code = main(["--tasks", str(tasks), "--handler", "nope", "--no-dashboard"])
+    code = main(["--input", str(tasks), "--handler", "nope", "--no-dashboard"])
     assert code == 2
     assert "module:function" in capsys.readouterr().err
 
 
 def test_bad_output_extension_exits_2_before_running(tmp_path: Path, capsys):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
     code = main([
-        "--tasks", str(tasks),
+        "--input", str(tasks),
         "--output", str(tmp_path / "results.xml"),
         "--no-dashboard",
     ])
@@ -74,7 +81,7 @@ def test_bad_output_extension_exits_2_before_running(tmp_path: Path, capsys):
 
 
 def test_unwritable_output_path_exits_1_with_message(tmp_path: Path, capsys, monkeypatch):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
 
     def _boom(results, path):
@@ -84,7 +91,7 @@ def test_unwritable_output_path_exits_1_with_message(tmp_path: Path, capsys, mon
     monkeypatch.setattr("main.asyncio.run", lambda coro: coro.close())
 
     code = main([
-        "--tasks", str(tasks),
+        "--input", str(tasks),
         "--output", str(tmp_path / "results.json"),
         "--no-dashboard",
     ])
@@ -95,7 +102,7 @@ def test_unwritable_output_path_exits_1_with_message(tmp_path: Path, capsys, mon
 def test_keyboard_interrupt_exits_130_and_writes_partial_results(
     tmp_path: Path, capsys, monkeypatch
 ):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
     out = tmp_path / "results.json"
 
@@ -106,7 +113,7 @@ def test_keyboard_interrupt_exits_130_and_writes_partial_results(
     monkeypatch.setattr("main.asyncio.run", _interrupt)
 
     code = main([
-        "--tasks", str(tasks),
+        "--input", str(tasks),
         "--output", str(out),
         "--no-dashboard",
     ])
@@ -117,7 +124,7 @@ def test_keyboard_interrupt_exits_130_and_writes_partial_results(
 
 
 def test_cancelled_error_exits_130(tmp_path: Path, capsys, monkeypatch):
-    tasks = tmp_path / "tasks.txt"
+    tasks = tmp_path / "input.txt"
     tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
     out = tmp_path / "results.json"
 
@@ -128,7 +135,7 @@ def test_cancelled_error_exits_130(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.setattr("main.asyncio.run", _cancel)
 
     code = main([
-        "--tasks", str(tasks),
+        "--input", str(tasks),
         "--output", str(out),
         "--no-dashboard",
     ])
@@ -141,17 +148,18 @@ def test_cancelled_error_exits_130(tmp_path: Path, capsys, monkeypatch):
 @pytest.mark.integration
 @pytest.mark.usefixtures("require_chromium")
 def test_cli_end_to_end_json(local_server, tmp_path: Path):
-    tasks = tmp_path / "tasks.txt"
-    tasks.write_text(f"{local_server}/ip?n=1\n{local_server}/ip?n=2\n", encoding="utf-8")
+    tasks = tmp_path / "input.txt"
+    tasks.write_text("".join(f"{local_server}/ip?n={i}\n" for i in range(1, 5)), encoding="utf-8")
     out = tmp_path / "results.json"
 
     proc = subprocess.run(
         [
             sys.executable, "main.py",
-            "--tasks", str(tasks),
+            "--input", str(tasks),
             "--proxies", str(tmp_path / "absent.txt"),
             "--output", str(out),
             "--concurrency", "2",
+            "--batch-size", "2",
             "--no-dashboard",
         ],
         cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=180,
@@ -159,29 +167,25 @@ def test_cli_end_to_end_json(local_server, tmp_path: Path):
 
     assert proc.returncode == 0, proc.stderr
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert len(data) == 2
+    assert len(data) == 2  # 4 lines / batch of 2
     assert all(d["status"] == "ok" for d in data)
-    assert all(d["data"]["ip"] == "127.0.0.1" for d in data)
+    assert all(len(d["inputs"]) == 2 for d in data)
+    assert all(len(d["data"]["results"]) == 2 for d in data)
+    assert all(r["ip"] == "127.0.0.1" for d in data for r in d["data"]["results"])
     assert "2/2 tasks finished, 0 failed" in proc.stdout
 
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("require_chromium")
 def test_cli_end_to_end_csv_with_failure_exits_1(local_server, tmp_path: Path):
-    tasks = tmp_path / "tasks.json"
-    tasks.write_text(
-        json.dumps([
-            {"url": f"{local_server}/ip", "name": "good"},
-            {"url": f"{local_server}/slow", "name": "too-slow"},
-        ]),
-        encoding="utf-8",
-    )
+    tasks = tmp_path / "input.txt"
+    tasks.write_text(f"{local_server}/ip\n{local_server}/slow\n", encoding="utf-8")
     out = tmp_path / "results.csv"
 
     proc = subprocess.run(
         [
             sys.executable, "main.py",
-            "--tasks", str(tasks),
+            "--input", str(tasks),
             "--proxies", str(tmp_path / "absent.txt"),
             "--output", str(out),
             "--timeout", "1",
@@ -192,6 +196,6 @@ def test_cli_end_to_end_csv_with_failure_exits_1(local_server, tmp_path: Path):
 
     assert proc.returncode == 1, proc.stderr
     lines = out.read_text(encoding="utf-8").splitlines()
-    assert lines[0].startswith("task_id,name,url,worker_id,proxy,status")
+    assert lines[0].startswith("task_id,name,inputs,worker_id,proxy,status")
     assert len(lines) == 3
     assert "timeout" in out.read_text(encoding="utf-8")

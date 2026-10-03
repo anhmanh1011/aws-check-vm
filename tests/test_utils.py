@@ -15,7 +15,7 @@ def _result(task_id: int, status: str = "ok") -> TaskResult:
     return TaskResult(
         task_id=task_id,
         name=f"task-{task_id}",
-        url=f"http://127.0.0.1/ip?n={task_id}",
+        inputs=[f"http://127.0.0.1/ip?n={task_id}"],
         worker_id=1,
         proxy="http://***:***@1.2.3.4:8080",
         status=status,  # type: ignore[arg-type]
@@ -55,7 +55,7 @@ def test_write_results_csv_has_header_and_flattened_data(tmp_path: Path):
     assert row["proxy"] == "http://***:***@1.2.3.4:8080"
     assert json.loads(row["data"]) == {"ip": "1.2.3.4", "raw": '{"origin": "1.2.3.4"}'}
     assert set(row) == {
-        "task_id", "name", "url", "worker_id", "proxy", "status",
+        "task_id", "name", "inputs", "worker_id", "proxy", "status",
         "started_at", "duration_s", "data", "error",
     }
 

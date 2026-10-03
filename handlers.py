@@ -33,24 +33,34 @@ DEFAULT_HANDLER = "handlers:fetch_ip"
 
 
 async def fetch_ip(page: Page, task: Task) -> dict[str, Any]:
-    """Navigate to ``task.url`` and extract the reported IP address.
+    """Treat every line in the batch as a URL, visit it, and read the IP.
+
+    Returns ``{"results": [{"url", "ip", "raw"}, ...]}`` with one entry per
+    line, in input order. This is the shape to copy for your own batch
+    handlers: loop over ``task.lines`` on the same page (same context, same
+    proxy) and collect one result per item.
 
     ``wait_until="domcontentloaded"`` is enough for a JSON endpoint and
     returns sooner than the default ``load`` event.
     """
-    await page.goto(task.url, wait_until="domcontentloaded")
-    raw = await page.locator("body").inner_text()
+    results: list[dict[str, Any]] = []
+    for url in task.lines:
+        await page.goto(url, wait_until="domcontentloaded")
+        raw = await page.locator("body").inner_text()
+        results.append({"url": url, "ip": _extract_ip(raw), "raw": raw})
+    return {"results": results}
 
-    ip: str | None = None
+
+def _extract_ip(raw: str) -> str | None:
+    """Pull the IP out of an httpbin (``origin``) or ipify (``ip``) JSON body."""
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        payload = None
-    if isinstance(payload, dict):
-        value = payload.get("origin") or payload.get("ip")
-        ip = str(value) if value is not None else None
-
-    return {"ip": ip, "raw": raw}
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("origin") or payload.get("ip")
+    return str(value) if value is not None else None
 
 
 def load_handler(spec: str) -> Handler:

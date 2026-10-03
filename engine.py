@@ -238,7 +238,7 @@ class AutomationEngine:
         return TaskResult(
             task_id=task.id,
             name=task.name,
-            url=task.url,
+            inputs=list(task.lines),
             worker_id=worker_id,
             proxy=proxy.masked() if proxy else None,
             status=status,

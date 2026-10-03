@@ -15,7 +15,7 @@ def _state() -> RunState:
     state.workers[1] = WorkerStatus(worker_id=1)
     state.workers[2] = WorkerStatus(
         worker_id=2,
-        task=Task(id=2, url="http://127.0.0.1/ip", name="task-2"),
+        task=Task(id=2, lines=("http://127.0.0.1/ip",), name="task-2"),
         proxy="http://***:***@proxy.example:8080",
         state="running",
         started_at=time.monotonic() - 1.5,

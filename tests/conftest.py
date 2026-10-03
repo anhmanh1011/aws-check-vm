@@ -7,6 +7,7 @@ tests on machines where ``playwright install chromium`` has not been run.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import subprocess
@@ -15,6 +16,7 @@ import threading
 import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -50,6 +52,18 @@ _DEMO_HTML = """<!doctype html>
 """
 
 
+_FORM_HTML = """<!doctype html>
+<html><head><title>Demo Form</title></head>
+<body>
+  {status}
+  <form action="/form" method="get">
+    <input id="email" name="email" type="text">
+    <button type="submit">Send</button>
+  </form>
+</body></html>
+"""
+
+
 class _EchoHandler(BaseHTTPRequestHandler):
     """Routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
     ``/slow`` -> 3 s delay, ``/boom`` -> 500."""
@@ -59,6 +73,14 @@ class _EchoHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"origin": self.client_address[0]}), "application/json")
         elif self.path.startswith("/page"):
             self._send(200, _DEMO_HTML, "text/html")
+        elif self.path.startswith("/form"):
+            # A GET form: submitting navigates to /form?email=... and the page
+            # echoes what it received, so a handler can fill, submit, read,
+            # and repeat on the same page.
+            query = parse_qs(urlsplit(self.path).query)
+            email = query.get("email", [""])[0]
+            status = f'<p id="status">accepted: {html.escape(email)}</p>' if email else ""
+            self._send(200, _FORM_HTML.format(status=status), "text/html")
         elif self.path.startswith("/slow"):
             time.sleep(3)
             self._send(200, json.dumps({"origin": "slow"}), "application/json")

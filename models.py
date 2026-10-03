@@ -20,14 +20,16 @@ WorkerState = Literal["idle", "running", "done"]
 
 @dataclass(frozen=True, slots=True)
 class Task:
-    """One unit of work: a URL plus a human-readable name.
+    """One unit of work: a batch of input lines plus a human-readable name.
 
-    ``id`` is the 1-based position in the task file so results can be
-    correlated back to the input.
+    ``lines`` holds one or more raw lines from the input file (an email, a
+    URL, an ID, anything your flow understands). The handler decides what to
+    do with them; the framework never interprets their content. ``id`` is the
+    1-based batch number so results can be correlated back to the input.
     """
 
     id: int
-    url: str
+    lines: tuple[str, ...]
     name: str
 
 
@@ -73,7 +75,7 @@ class TaskResult:
 
     task_id: int
     name: str
-    url: str
+    inputs: list[str]
     worker_id: int
     proxy: str | None
     status: Status

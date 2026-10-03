@@ -12,7 +12,7 @@ report a different outgoing address.
 python -m pip install -r requirements.txt
 python -m playwright install chromium
 
-# Edit proxies.txt (optional) and tasks.txt, then:
+# Edit proxies.txt (optional) and input.txt, then:
 python main.py
 ```
 
@@ -21,8 +21,9 @@ Common variations:
 ```bash
 python main.py --concurrency 5 --output results.csv
 python main.py --no-headless --timeout 60        # watch the browser work
-python main.py --tasks tasks.json --no-dashboard  # plain logs, good for CI
-python main.py --handler my_handlers:login_probe  # your own per-task logic
+python main.py --no-dashboard                     # plain logs, good for CI
+python main.py --input emails.txt --batch-size 10 # 10 lines per browser context
+python main.py --handler my_handlers:process_lines # your own flow over the lines
 python main.py -v                                 # DEBUG-level logging
 ```
 
@@ -34,7 +35,7 @@ are still written).
 ## How it works
 
 ```
-main.py ── argparse ──► load_tasks()        tasks.txt / tasks.json
+main.py ── argparse ──► load_tasks()        input.txt → batches of lines
                      ──► ProxyManager        proxies.txt (round-robin)
                      ──► load_handler()      handlers:fetch_ip (default)
                      ──► AutomationEngine
@@ -105,19 +106,25 @@ empty `proxies.txt` makes every context connect directly, with a warning.
 Chromium; the credentials are ignored. Use HTTP proxies when you need
 authentication.
 
-## Task file format
+## Input file and batching
 
-`tasks.txt`: one URL per line.
+`--input` (default `input.txt`) is a plain text file with one data item per
+line: an email, a URL, an account ID, anything. Blank lines and `#` comments
+are ignored. The framework never interprets the lines; your handler receives
+them in `task.lines` and decides which site to open and what to click. The
+run ends when every line has been processed.
 
-`tasks.json`: a list of URL strings, or objects with `url` and an optional
-`name`:
+`--batch-size` controls how many lines share one browser context:
 
-```json
-[
-  {"url": "https://httpbin.org/ip", "name": "httpbin"},
-  "https://api.ipify.org?format=json"
-]
-```
+| Value | Meaning |
+| --- | --- |
+| `1` (default) | one line per context: maximum isolation, one task per line |
+| `N` | fixed batches of N lines; 1000 lines with `N=10` become 100 tasks that the queue hands to whichever of the `--concurrency` workers is free |
+| `0` | auto: split evenly so every worker gets exactly one batch of `ceil(total / concurrency)` lines |
+
+Each batch is one `Task`, one browser context, one row in the results. The
+default handler treats lines as URLs, so the shipped `input.txt` lists
+IP-echo endpoints.
 
 ## Writing your own handler
 
@@ -128,9 +135,15 @@ from playwright.async_api import Page
 from models import Task
 
 async def my_handler(page: Page, task: Task) -> dict:
-    await page.goto(task.url)
-    title = await page.title()
-    return {"title": title}
+    # task.lines is one batch from --input (a single line by default).
+    # Your flow decides what a line means and which site to open.
+    await page.goto("https://example.com/login")
+    results = []
+    for email in task.lines:
+        await page.fill("#email", email)
+        await page.click("button[type=submit]")
+        results.append({"email": email, "status": await page.locator("#status").inner_text()})
+    return {"results": results}
 ```
 
 Save it in, say, `my_handlers.py` next to `main.py` and run
@@ -139,11 +152,13 @@ stored in the `data` field of each result. The page you receive lives in a
 fresh context, so log-ins, cookies and storage from other tasks are never
 visible.
 
-A worked example ships in `my_handlers.py`: `extract_page` reads the title,
-the first heading and the link count, and saves a screenshot per task under
-`screenshots/`. Try it with
+Two worked examples ship in `my_handlers.py`. `extract_page` treats each
+line as a URL: it reads the title, the first heading and the link count, and
+saves a screenshot per line under `screenshots/`. `process_lines` treats each
+line as data (an email) and submits every one through a single form on a
+site the flow itself chooses, reusing the same page for the whole batch. Try
 `python main.py --handler my_handlers:extract_page`, then read the comments
-in that file to see why each Playwright call is written the way it is. Its
+in that file to see why each Playwright call is written the way it is. The
 tests in `tests/test_my_handlers.py` show how to test a handler of your own
 against the local server in `tests/conftest.py`.
 
@@ -154,14 +169,17 @@ against the local server in `tests/conftest.py`.
 ```json
 {
   "task_id": 1,
-  "name": "https://httpbin.org/ip",
-  "url": "https://httpbin.org/ip",
+  "name": "https://httpbin.org/ip (+1 more)",
+  "inputs": ["https://httpbin.org/ip", "https://api.ipify.org?format=json"],
   "worker_id": 2,
   "proxy": "http://***:***@203.0.113.10:8080",
   "status": "ok",
   "started_at": "2026-10-03T09:15:02.123456+00:00",
   "duration_s": 1.482,
-  "data": {"ip": "203.0.113.10", "raw": "{\"origin\": \"203.0.113.10\"}"},
+  "data": {"results": [
+    {"url": "https://httpbin.org/ip", "ip": "203.0.113.10", "raw": "{\"origin\": \"203.0.113.10\"}"},
+    {"url": "https://api.ipify.org?format=json", "ip": "203.0.113.10", "raw": "{\"ip\":\"203.0.113.10\"}"}
+  ]},
   "error": null
 }
 ```

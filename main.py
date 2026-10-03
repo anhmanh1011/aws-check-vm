@@ -2,8 +2,9 @@
 
 Wires the pieces together in one obvious place::
 
-    argparse -> load_tasks / ProxyManager.from_file / load_handler
-             -> AutomationEngine (+ Dashboard) -> write_results -> exit code
+    argparse -> load_tasks (input lines -> batches) / ProxyManager.from_file
+             / load_handler -> AutomationEngine (+ Dashboard) -> write_results
+             -> exit code
 
 WHY the dashboard and the engine run under one ``asyncio.gather``: both are
 coroutines on the same event loop. The engine sets an ``asyncio.Event`` when
@@ -40,14 +41,27 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _non_negative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Define the CLI. Kept separate from ``main`` so tests can inspect defaults."""
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Run web-automation tasks concurrently with isolated, proxied browser contexts.",
+        description="Run a browser-automation flow over every line of an input file, "
+                    "concurrently, each batch in its own isolated, proxied browser context.",
     )
-    parser.add_argument("--tasks", type=Path, default=Path("tasks.txt"),
-                        help="task file: .txt (one URL per line) or .json (default: %(default)s)")
+    parser.add_argument("--input", type=Path, default=Path("input.txt"),
+                        help="text file, one data item per line; your handler decides what "
+                             "each line means (default: %(default)s)")
+    parser.add_argument("--batch-size", type=_non_negative_int, default=1,
+                        help="lines per browser context: 1 = one context per line, N = fixed "
+                             "batches of N, 0 = split evenly so each worker gets one batch "
+                             "(default: %(default)s)")
     parser.add_argument("--proxies", type=Path, default=Path("proxies.txt"),
                         help="proxy list; missing or empty means connect directly (default: %(default)s)")
     parser.add_argument("--concurrency", type=_positive_int, default=3,
@@ -102,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError(
                 f"unsupported output extension {args.output.suffix!r} (use .json or .csv)"
             )
-        tasks = load_tasks(args.tasks)
+        tasks = load_tasks(args.input, batch_size=args.batch_size, concurrency=args.concurrency)
         proxy_manager = ProxyManager.from_file(args.proxies)
         handler = load_handler(args.handler)
     except (FileNotFoundError, ValueError) as exc:
