@@ -66,7 +66,7 @@ _FORM_HTML = """<!doctype html>
 
 class _EchoHandler(BaseHTTPRequestHandler):
     """Routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
-    ``/slow`` -> 3 s delay, ``/boom`` -> 500."""
+    ``/slow`` -> 3 s delay, ``/boom`` -> 500, ``/proxies/new`` -> KiotProxy-shaped JSON (failure when key=badkey)."""
 
     def do_GET(self) -> None:  # noqa: N802 (name mandated by BaseHTTPRequestHandler)
         if self.path.startswith("/ip"):
@@ -86,6 +86,27 @@ class _EchoHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"origin": "slow"}), "application/json")
         elif self.path.startswith("/boom"):
             self._send(500, "boom", "text/plain")
+        elif self.path.startswith("/proxies/new"):
+            key = parse_qs(urlsplit(self.path).query).get("key", [""])[0]
+            if key == "badkey":
+                body = {
+                    "success": False, "code": 40400006,
+                    "message": "Key not found", "status": "FAIL",
+                    "error": "KEY_NOT_FOUND",
+                }
+            else:
+                body = {
+                    "data": {
+                        "realIpAddress": "127.0.0.1",
+                        "http": "127.0.0.1:39008",
+                        "socks5": "127.0.0.1:39009",
+                        "httpPort": 39008, "socks5Port": 39009,
+                        "host": "127.0.0.1", "location": "Test",
+                        "expirationAt": 1718030731927, "ttl": 1200, "ttc": 59,
+                    },
+                    "success": True, "code": 200, "status": "SUCCESS",
+                }
+            self._send(200, json.dumps(body), "application/json")
         else:
             self._send(404, "not found", "text/plain")
 
