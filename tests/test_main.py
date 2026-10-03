@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -89,6 +90,52 @@ def test_unwritable_output_path_exits_1_with_message(tmp_path: Path, capsys, mon
     ])
     assert code == 1
     assert "could not write results" in capsys.readouterr().err
+
+
+def test_keyboard_interrupt_exits_130_and_writes_partial_results(
+    tmp_path: Path, capsys, monkeypatch
+):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
+    out = tmp_path / "results.json"
+
+    def _interrupt(coro):
+        coro.close()  # avoid a "coroutine was never awaited" warning
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("main.asyncio.run", _interrupt)
+
+    code = main([
+        "--tasks", str(tasks),
+        "--output", str(out),
+        "--no-dashboard",
+    ])
+
+    assert code == 130
+    assert "Interrupted" in capsys.readouterr().err
+    assert json.loads(out.read_text(encoding="utf-8")) == []
+
+
+def test_cancelled_error_exits_130(tmp_path: Path, capsys, monkeypatch):
+    tasks = tmp_path / "tasks.txt"
+    tasks.write_text("http://127.0.0.1/ip\n", encoding="utf-8")
+    out = tmp_path / "results.json"
+
+    def _cancel(coro):
+        coro.close()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("main.asyncio.run", _cancel)
+
+    code = main([
+        "--tasks", str(tasks),
+        "--output", str(out),
+        "--no-dashboard",
+    ])
+
+    assert code == 130
+    assert "Interrupted" in capsys.readouterr().err
+    assert json.loads(out.read_text(encoding="utf-8")) == []
 
 
 @pytest.mark.integration

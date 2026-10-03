@@ -23,7 +23,12 @@ from models import TaskResult
 
 
 def mask_credentials(url: str) -> str:
-    """Replace ``user:pass`` in a URL with ``***:***``; return other URLs unchanged."""
+    """Replace ``user:pass`` in a URL with ``***:***``; return other URLs unchanged.
+
+    This is a helper for user-written handlers that log task URLs themselves;
+    the engine does not call it to mask proxies -- that goes through
+    ``Proxy.masked()`` instead.
+    """
     parts = urlsplit(url)
     if parts.username is None and parts.password is None:
         return url

@@ -48,6 +48,9 @@ async def test_all_tasks_succeed_across_workers(local_server):
     assert len(results) == 6
     assert {r.status for r in results} == {"ok"}
     assert {r.worker_id for r in results} <= {1, 2, 3}
+    # Proves the work was actually spread across workers, not run serially
+    # by a single one that happened to finish everything.
+    assert len({r.worker_id for r in results}) >= 2
     assert all(r.data["ip"] == "127.0.0.1" for r in results)
     assert all(r.proxy is None for r in results)
     assert (state.completed, state.ok, state.failed) == (6, 6, 0)
@@ -82,11 +85,27 @@ async def test_slow_handler_times_out(local_server):
     assert state.failed == 1
 
 
+async def test_handler_raising_its_own_timeout_error_is_failed_not_timeout(local_server):
+    # On Python 3.11+, asyncio.TimeoutError is TimeoutError, so a handler
+    # that raises a builtin TimeoutError of its own (e.g. a socket read
+    # timeout) must not be confused with wait_for's deadline firing.
+    async def raises_own_timeout(page, task):
+        await page.goto(task.url)
+        raise TimeoutError("socket read timed out")
+
+    engine, state = _engine(_tasks(local_server, 1), handler=raises_own_timeout)
+    (result,) = await engine.run()
+
+    assert result.status == "failed"
+    assert result.error == "TimeoutError: socket read timed out"
+    assert state.failed == 1
+
+
 async def test_unreachable_proxy_is_recorded_as_failure(local_server):
     # Chromium bypasses proxies for loopback addresses, so target a
     # non-loopback hostname. Name resolution is delegated to an HTTP proxy,
     # and the proxy refuses the connection first.
-    bad_proxy = Proxy(server="http://127.0.0.1:9")
+    bad_proxy = Proxy(server="http://127.0.0.1:9", username="alice", password="s3cret")
     tasks = [
         Task(id=1, url="http://proxy-test.invalid/ip", name="via-bad-proxy-1"),
         Task(id=2, url="http://proxy-test.invalid/ip", name="via-bad-proxy-2"),
@@ -97,7 +116,10 @@ async def test_unreachable_proxy_is_recorded_as_failure(local_server):
     assert len(results) == 2
     assert all(r.status == "failed" for r in results)
     assert all(r.error and "ERR_PROXY" in r.error for r in results)
-    assert all(r.proxy == "http://127.0.0.1:9" for r in results)
+    assert all(r.proxy == "http://***:***@127.0.0.1:9" for r in results)
+    # End-to-end check that credentials never leak into the recorded error
+    # text either, not just into the masked proxy field.
+    assert all("s3cret" not in (r.error or "") and "alice" not in (r.error or "") for r in results)
     assert state.completed == 2
 
 

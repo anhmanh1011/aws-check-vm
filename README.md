@@ -23,11 +23,13 @@ python main.py --concurrency 5 --output results.csv
 python main.py --no-headless --timeout 60        # watch the browser work
 python main.py --tasks tasks.json --no-dashboard  # plain logs, good for CI
 python main.py --handler my_handlers:login_probe  # your own per-task logic
+python main.py -v                                 # DEBUG-level logging
 ```
 
 Exit code is `0` when every task succeeded, `1` when any task failed, `2`
-for bad input files or a bad `--handler`, and `130` after Ctrl+C (partial
-results are still written).
+for bad input files, a bad `--handler`, or a bad `--output` extension (only
+`.json` and `.csv` are supported), and `130` after Ctrl+C (partial results
+are still written).
 
 ## How it works
 

@@ -8,6 +8,7 @@ tests on machines where ``playwright install chromium`` has not been run.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import threading
@@ -16,6 +17,26 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logger() -> Iterator[None]:
+    """Undo whatever a test's call to ``setup_logging`` did to the root logger.
+
+    ``setup_logging`` replaces the root logger's handlers wholesale, so
+    without this fixture a handler (and its open file) installed by one test
+    would leak into every test that runs after it.
+    """
+    root = logging.getLogger()
+    handlers_before = root.handlers[:]
+    level_before = root.level
+    yield
+    for handler in root.handlers[:]:
+        if handler not in handlers_before:
+            root.removeHandler(handler)
+            handler.close()
+    root.handlers[:] = handlers_before
+    root.setLevel(level_before)
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

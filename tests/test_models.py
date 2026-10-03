@@ -27,6 +27,13 @@ def test_proxy_masked_without_credentials_is_server():
     assert proxy.masked() == "http://1.2.3.4:8080"
 
 
+def test_proxy_masked_does_not_leak_credentials_embedded_in_server():
+    # ``server`` itself (not just username/password) may carry a real
+    # credential pair; masked() must not depend on it being credential-free.
+    proxy = Proxy(server="http://u:p@1.2.3.4:8080", username="u", password="p")
+    assert proxy.masked() == "http://***:***@1.2.3.4:8080"
+
+
 def test_task_is_frozen():
     task = Task(id=1, url="https://example.com", name="example")
     try:

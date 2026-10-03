@@ -124,7 +124,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     exit_code = 0
     try:
         asyncio.run(run_async(engine, dashboard))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # KeyboardInterrupt is Ctrl+C reaching Python's signal handler
+        # directly. asyncio.CancelledError is the same interrupt observed
+        # from inside the event loop: asyncio.run() cancels the top-level
+        # task on KeyboardInterrupt, and that cancellation can itself
+        # surface here as a CancelledError instead of (or alongside) the
+        # original KeyboardInterrupt, depending on exactly where the signal
+        # lands. Both mean the same thing to the user, so both get the same
+        # exit code and message.
         print("\nInterrupted; writing partial results", file=sys.stderr)
         exit_code = 130
     except Exception as exc:  # noqa: BLE001 - e.g. browser failed to launch

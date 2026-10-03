@@ -110,7 +110,18 @@ class AutomationEngine:
                 # Playwright driver process exits at the end of the
                 # ``async_playwright()`` context, but closing it explicitly
                 # here keeps teardown deterministic and immediate.
-                await browser.close()
+                #
+                # WHY suppressed: on Ctrl+C, the console interrupt (SIGINT on
+                # POSIX, CTRL_C_EVENT on Windows) is delivered to the whole
+                # process group at once, so the Playwright driver subprocess
+                # and the Chromium process it manages may already be dying or
+                # gone by the time we get here, and ``close()`` can raise
+                # ``TargetClosedError``. An exception raised inside this
+                # ``finally`` would replace the ``CancelledError`` that is
+                # already propagating, turning a clean exit code 130 into an
+                # unrelated exit code 1.
+                with suppress(Exception):
+                    await browser.close()
 
         return list(self._state.results)
 
@@ -170,24 +181,50 @@ class AutomationEngine:
             )
             page = await context.new_page()
             # ``wait_for`` cancels the handler if it overruns; the ``finally``
-            # below still closes the context.
-            data = await asyncio.wait_for(self._handler(page, task), timeout=self._timeout_s)
-            status = "ok"
-        except asyncio.TimeoutError:
-            status = "timeout"
-            error = f"handler exceeded {self._timeout_s}s"
-        except Exception as exc:  # noqa: BLE001
-            # WHY broad: Playwright raises several classes (Error, TimeoutError,
-            # TargetClosedError) and a dead proxy surfaces as a navigation
-            # Error. All of them must be recorded, none may kill the worker.
-            # CancelledError is a BaseException and is deliberately NOT caught,
-            # so Ctrl+C still propagates.
-            status = "failed"
-            error = f"{type(exc).__name__}: {exc}"
+            # below still closes the context. The handler runs as its own
+            # Task (rather than a bare coroutine) so that, after ``wait_for``
+            # raises, we can ask the task whether *it* was cancelled -- that's
+            # what tells a real deadline-overrun apart from the handler racing
+            # its own ``TimeoutError`` past the deadline (see below).
+            handler_task = asyncio.create_task(self._handler(page, task))
+            try:
+                data = await asyncio.wait_for(handler_task, timeout=self._timeout_s)
+                status = "ok"
+            except TimeoutError as exc:
+                # WHY this isn't just ``except asyncio.TimeoutError``: on
+                # Python 3.11+ ``asyncio.TimeoutError is TimeoutError``, so a
+                # handler that raises a *builtin* ``TimeoutError`` of its own
+                # (e.g. a socket read timeout) is indistinguishable from
+                # ``wait_for``'s deadline by type alone. We disambiguate by
+                # asking whether ``wait_for`` actually cancelled the handler
+                # task: it only does that when its own deadline fires.
+                if handler_task.cancelled():
+                    # wait_for hit the deadline and cancelled the handler: a
+                    # real overrun.
+                    status, error = "timeout", f"handler exceeded {self._timeout_s}s"
+                else:
+                    # The handler raised its own TimeoutError before the
+                    # deadline; this is a handler failure, not an overrun.
+                    status, error = "failed", f"{type(exc).__name__}: {exc}"
+            except Exception as exc:  # noqa: BLE001
+                # WHY broad: Playwright raises several classes (Error, TimeoutError,
+                # TargetClosedError) and a dead proxy surfaces as a navigation
+                # Error. All of them must be recorded, none may kill the worker.
+                # CancelledError is a BaseException and is deliberately NOT caught,
+                # so Ctrl+C still propagates.
+                status = "failed"
+                error = f"{type(exc).__name__}: {exc}"
         finally:
             if context is not None:
-                with suppress(Exception):
+                try:
                     await context.close()
+                except Exception as exc:  # noqa: BLE001
+                    # Spec: a failure here is ignored (it never changes the
+                    # task's recorded status/error) but logged at DEBUG so it
+                    # is still visible when diagnosing teardown issues.
+                    # CancelledError is a BaseException, so it is not caught
+                    # here and still propagates on Ctrl+C.
+                    log.debug("context.close() failed for task %d: %s", task.id, exc)
 
         if not isinstance(data, dict):
             data = {"value": data}

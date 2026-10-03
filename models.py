@@ -57,7 +57,13 @@ class Proxy:
         if self.username is None and self.password is None:
             return self.server
         parts = urlsplit(self.server)
-        return f"{parts.scheme}://***:***@{parts.netloc}"
+        # WHY hostname/port, not netloc: if ``server`` itself embeds
+        # ``user:pass@`` (rather than carrying them separately in
+        # ``self.username``/``self.password``), ``netloc`` would include that
+        # real, unmasked credential pair verbatim alongside our ``***:***``.
+        # Rebuilding from ``hostname``/``port`` drops any such embedded
+        # credentials unconditionally.
+        return f"{parts.scheme}://***:***@{parts.hostname}:{parts.port}"
 
 
 @dataclass(slots=True)
