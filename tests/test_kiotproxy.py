@@ -126,3 +126,60 @@ def test_get_json_sends_browser_user_agent(monkeypatch):
     assert "req" in captured
     assert captured["req"].get_header("User-agent") == kiotproxy._USER_AGENT
     assert result == {"success": True, "data": {"http": "1.2.3.4:8080"}}
+
+
+def test_get_json_logs_masked_request_and_response(caplog, monkeypatch):
+    """_get_json logs the request URL (key masked) and the response body at INFO."""
+    import logging
+
+    class _FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"success": true, "data": {"http": "9.9.9.9:1234"}}'
+
+    def _fake_urlopen(req, timeout=None):
+        return _FakeResp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    caplog.set_level(logging.INFO, logger="kiotproxy")
+
+    key = "Keb294a4b014b4c44b9284a761274b0ae"
+    url = f"https://api.example/proxies/new?key={key}&region=random"
+    kiotproxy._get_json(url, 1.0)
+
+    text = caplog.text
+    assert key not in text                      # raw key never logged
+    assert mask_key(key) in text                 # masked form is
+    assert "9.9.9.9:1234" in text                # response body is logged
+
+
+def test_get_json_logs_http_error_body(caplog, monkeypatch):
+    """On an HTTP error, _get_json logs the response body before raising."""
+    import io
+    import logging
+    import urllib.error
+
+    def _fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            url="https://api.example/proxies/new",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"success": false, "error": "BAD_REQUEST"}'),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    caplog.set_level(logging.INFO, logger="kiotproxy")
+
+    with pytest.raises(KiotProxyError):
+        kiotproxy._get_json("https://api.example/proxies/new?key=abc&region=random", 1.0)
+
+    assert "400" in caplog.text
+    assert "BAD_REQUEST" in caplog.text

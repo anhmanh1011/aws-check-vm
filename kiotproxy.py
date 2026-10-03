@@ -62,14 +62,47 @@ def mask_key(key: str) -> str:
     return f"{key[:4]}…{key[-4:]}"
 
 
+def _redact_url(url: str) -> str:
+    """Return ``url`` with the ``key`` query value replaced by its masked form.
+
+    Logging the request must never expose the raw key. The key value is
+    replaced in place with ``mask_key(value)``, so the rest of the URL (host,
+    region) is untouched and the masked marker stays human-readable (a plain
+    string replace avoids percent-encoding the mask's ``…``).
+    """
+    parts = urllib.parse.urlsplit(url)
+    for name, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        if name == "key" and value:
+            return url.replace(value, mask_key(value))
+    return url
+
+
 def _get_json(url: str, timeout_s: float) -> dict[str, Any]:
-    """GET ``url`` and parse a JSON object, raising ``KiotProxyError`` on any failure."""
+    """GET ``url`` and parse a JSON object, raising ``KiotProxyError`` on any failure.
+
+    The request (with the key masked) and the raw response body are logged at
+    INFO so a ``--no-dashboard`` run shows the KiotProxy exchange on the
+    console. The body carries only the proxy IP, which is not a secret.
+    """
+    log.info("KiotProxy request: GET %s", _redact_url(url))
     try:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             raw = response.read().decode("utf-8")
+            status = getattr(response, "status", None)
+    except urllib.error.HTTPError as exc:
+        # An HTTP error (e.g. 400/403) still carries a body, which is exactly
+        # the KiotProxy error the caller needs to see. Log it before raising.
+        body = ""
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:  # noqa: BLE001 - body may be unreadable; the status still helps
+            pass
+        log.info("KiotProxy response (HTTP %s): %s", exc.code, body)
+        raise KiotProxyError(f"request to KiotProxy failed: {exc}") from exc
     except (urllib.error.URLError, OSError) as exc:
         raise KiotProxyError(f"request to KiotProxy failed: {exc}") from exc
+    log.info("KiotProxy response (HTTP %s): %s", status, raw)
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
