@@ -106,6 +106,26 @@ empty `proxies.txt` makes every context connect directly, with a warning.
 Chromium; the credentials are ignored. Use HTTP proxies when you need
 authentication.
 
+## KiotProxy
+
+Instead of a static `proxies.txt`, the pool can come from the
+[KiotProxy](https://kiotproxy.com) API. Put one key per line in a file and
+pass it:
+
+```bash
+python main.py --kiot-keys keys.txt --kiot-region random --concurrency 3
+```
+
+Each key yields **one** IP at a time, so the pool is as wide as the number of
+keys: three keys give three simultaneous IPs round-robined across contexts.
+`--kiot-region` is one of `bac`, `trung`, `nam`, `random`. The framework calls
+`/proxies/new` once per key at startup and uses the HTTP proxy it returns; it
+does not rotate IPs mid-run. A key that the API rejects is logged (masked) and
+skipped; if every key fails the run continues with no proxy.
+
+`--kiot-keys` replaces `--proxies` when both are present. Keep your key file
+out of version control: `keys.txt` is already in `.gitignore`.
+
 ## Input file and batching
 
 `--input` (default `input.txt`) is a plain text file with one data item per

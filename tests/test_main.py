@@ -44,6 +44,53 @@ def test_parser_accepts_zero_batch_size_as_auto_but_rejects_negative():
         build_parser().parse_args(["--batch-size", "-1"])
 
 
+def test_parser_kiot_defaults():
+    args = build_parser().parse_args([])
+    assert args.kiot_keys is None
+    assert args.kiot_region == "random"
+
+
+def test_parser_rejects_unknown_region():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--kiot-region", "europe"])
+
+
+def test_kiot_keys_builds_pool_without_network(tmp_path, capsys, monkeypatch, local_server):
+    import kiotproxy
+    monkeypatch.setattr(kiotproxy, "BASE_URL", local_server)
+    monkeypatch.setattr("main.asyncio.run", lambda coro: coro.close())
+
+    keyfile = tmp_path / "keys.txt"
+    keyfile.write_text("goodkey\n", encoding="utf-8")
+    out = tmp_path / "results.json"
+    inp = tmp_path / "input.txt"
+    inp.write_text("line1\n", encoding="utf-8")
+
+    code = main([
+        "--kiot-keys", str(keyfile),
+        "--kiot-region", "random",
+        "--input", str(inp),
+        "--output", str(out),
+        "--no-dashboard",
+    ])
+
+    # asyncio.run is stubbed, so no tasks complete: summary prints, exit is 1
+    # (fewer results than tasks), never 2 (which would mean proxy loading
+    # failed as bad input).
+    assert code != 2
+    assert "tasks finished" in capsys.readouterr().out
+
+
+def test_kiot_keys_missing_file_exits_2(tmp_path, capsys):
+    code = main([
+        "--kiot-keys", str(tmp_path / "nope.txt"),
+        "--input", str(tmp_path / "input.txt"),
+        "--no-dashboard",
+    ])
+    assert code == 2
+    assert "key file not found" in capsys.readouterr().err
+
+
 def test_missing_input_file_exits_2(tmp_path: Path, capsys):
     code = main(["--input", str(tmp_path / "nope.txt"), "--no-dashboard"])
     assert code == 2

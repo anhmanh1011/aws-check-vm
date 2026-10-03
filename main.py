@@ -26,6 +26,8 @@ from pathlib import Path
 from dashboard import Dashboard
 from engine import AutomationEngine
 from handlers import DEFAULT_HANDLER, load_handler
+import kiotproxy
+from kiotproxy import load_keys, load_kiot_proxies
 from models import RunState, TaskResult
 from proxy_manager import ProxyManager
 from tasks import load_tasks
@@ -64,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "(default: %(default)s)")
     parser.add_argument("--proxies", type=Path, default=Path("proxies.txt"),
                         help="proxy list; missing or empty means connect directly (default: %(default)s)")
+    parser.add_argument("--kiot-keys", type=Path, default=None,
+                        help="KiotProxy key file, one key per line; when given it replaces "
+                             "--proxies as the proxy source (default: %(default)s)")
+    parser.add_argument("--kiot-region", default="random", choices=sorted(kiotproxy.VALID_REGIONS),
+                        help="KiotProxy region for --kiot-keys (default: %(default)s)")
     parser.add_argument("--concurrency", type=_positive_int, default=3,
                         help="number of concurrent workers / live contexts (default: %(default)s)")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True,
@@ -116,8 +123,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError(
                 f"unsupported output extension {args.output.suffix!r} (use .json or .csv)"
             )
+        if args.kiot_keys is not None:
+            # --kiot-keys replaces proxies.txt: fetch one IP per key up front
+            # and build the same round-robin pool the engine already expects.
+            # Done before load_tasks so a bad key file fails fast with its
+            # own message instead of being masked by an unrelated input error.
+            keys = load_keys(args.kiot_keys)
+            proxy_manager = ProxyManager(load_kiot_proxies(keys, args.kiot_region))
+        else:
+            proxy_manager = ProxyManager.from_file(args.proxies)
         tasks = load_tasks(args.input, batch_size=args.batch_size, concurrency=args.concurrency)
-        proxy_manager = ProxyManager.from_file(args.proxies)
         handler = load_handler(args.handler)
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
