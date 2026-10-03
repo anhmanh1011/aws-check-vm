@@ -1,0 +1,12 @@
+# One proxy per line. Supported formats:
+#   http://user:pass@host:port
+#   http://host:port
+#   https://host:port
+#   socks5://host:port        (Chromium ignores credentials on SOCKS5)
+#   socks4://host:port
+#
+# Percent-encode special characters in credentials, e.g. user%40corp for user@corp.
+# If this file is missing or has no proxies, every context connects directly.
+#
+# http://alice:s3cret@203.0.113.10:8080
+# socks5://198.51.100.20:1080

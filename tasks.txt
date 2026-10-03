@@ -1,0 +1,9 @@
+# One URL per line. Blank lines and lines starting with # are ignored.
+# Both endpoints echo the outgoing IP address, which lets you verify that
+# each browser context really used its assigned proxy.
+https://httpbin.org/ip
+https://api.ipify.org?format=json
+https://httpbin.org/ip
+https://api.ipify.org?format=json
+https://httpbin.org/ip
+https://api.ipify.org?format=json
