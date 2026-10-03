@@ -97,3 +97,32 @@ def test_mask_key_hides_middle_of_long_key():
 
 def test_mask_key_fully_masks_short_key():
     assert mask_key("abcd") == "****"
+
+
+class _FakeResp:
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_get_json_sends_browser_user_agent(monkeypatch):
+    captured = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured["req"] = req
+        return _FakeResp(b'{"success": true, "data": {"http": "1.2.3.4:8080"}}')
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    result = kiotproxy._get_json("http://example.invalid", 1.0)
+
+    assert "req" in captured
+    assert captured["req"].get_header("User-agent") == kiotproxy._USER_AGENT
+    assert result == {"success": True, "data": {"http": "1.2.3.4:8080"}}

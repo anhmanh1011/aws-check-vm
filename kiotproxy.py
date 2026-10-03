@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://api.kiotproxy.com/api/v1"
 VALID_REGIONS = frozenset({"bac", "trung", "nam", "random"})
 
+# KiotProxy's WAF rejects urllib's default User-Agent with HTTP 403, so send a browser-like one.
+_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
 
 class KiotProxyError(Exception):
     """A KiotProxy call failed: transport, bad body, or ``success: false``.
@@ -62,7 +65,8 @@ def mask_key(key: str) -> str:
 def _get_json(url: str, timeout_s: float) -> dict[str, Any]:
     """GET ``url`` and parse a JSON object, raising ``KiotProxyError`` on any failure."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             raw = response.read().decode("utf-8")
     except (urllib.error.URLError, OSError) as exc:
         raise KiotProxyError(f"request to KiotProxy failed: {exc}") from exc
