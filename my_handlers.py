@@ -32,12 +32,15 @@ it into one fixed site that the flow itself chooses.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
+from time import time
 from typing import Any
 
 from playwright.async_api import Page
 
+from actions import click, fill, goto
 from models import Task
 
 # Screenshots are written here; the folder is created on first use and is
@@ -46,7 +49,7 @@ SCREENSHOT_DIR = Path("screenshots")
 
 # The site ``process_lines`` works against. The flow owns this choice; the
 # input file only supplies data. Tests point it at the local test server.
-FORM_URL = "http://127.0.0.1:8000/form"
+FORM_URL = "https://console.aws.amazon.com/console/home?nc2=h_si&src=header-signin"
 
 # How long to wait for the page's first heading before deciding it has none.
 # Short on purpose: a JSON endpoint or a bare page should not stall a worker.
@@ -133,3 +136,18 @@ async def process_lines(page: Page, task: Task) -> dict[str, Any]:
         processed.append({"email": email, "status": status})
 
     return {"processed": processed}
+
+async def check_VM(page: Page, task: Task) -> dict[str, Any]:
+    """Open the AWS sign-in page and start the root-account email step.
+
+    Written with the ``actions`` helpers: each call waits for its element to
+    be visible before acting, so there is no manual ``wait_for_selector`` or
+    bare ``sleep``.
+    """
+    await goto(page, FORM_URL)
+    await click(page, "#root_account_signin")
+    await fill(page, "#resolving_input", "daoducmanh28101997@gmail.com")
+    await click(page, "#next_button")
+
+    return {"processed": []}
+

@@ -152,6 +152,12 @@ stored in the `data` field of each result. The page you receive lives in a
 fresh context, so log-ins, cookies and storage from other tasks are never
 visible.
 
+To keep a flow short, `actions.py` wraps the common steps so each one waits
+for its element to be visible first: `goto`, `click`, `fill`, `get_text`,
+`wait` (returns a locator), and `sleep`. They raise on timeout, which the
+engine records as a `failed` result. Import what you need:
+`from actions import goto, click, fill, get_text, sleep`.
+
 Two worked examples ship in `my_handlers.py`. `extract_page` treats each
 line as a URL: it reads the title, the first heading and the link count, and
 saves a screenshot per line under `screenshots/`. `process_lines` treats each
