@@ -39,12 +39,26 @@ def _restore_root_logger() -> Iterator[None]:
     root.setLevel(level_before)
 
 
+_DEMO_HTML = """<!doctype html>
+<html><head><title>Demo Page</title></head>
+<body>
+  <h1>Hello from the local server</h1>
+  <p>Used by the example handler tests.</p>
+  <a href="/ip">first link</a>
+  <a href="/boom">second link</a>
+</body></html>
+"""
+
+
 class _EchoHandler(BaseHTTPRequestHandler):
-    """Routes: ``/ip`` -> JSON origin, ``/slow`` -> 3 s delay, ``/boom`` -> 500."""
+    """Routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
+    ``/slow`` -> 3 s delay, ``/boom`` -> 500."""
 
     def do_GET(self) -> None:  # noqa: N802 (name mandated by BaseHTTPRequestHandler)
         if self.path.startswith("/ip"):
             self._send(200, json.dumps({"origin": self.client_address[0]}), "application/json")
+        elif self.path.startswith("/page"):
+            self._send(200, _DEMO_HTML, "text/html")
         elif self.path.startswith("/slow"):
             time.sleep(3)
             self._send(200, json.dumps({"origin": "slow"}), "application/json")

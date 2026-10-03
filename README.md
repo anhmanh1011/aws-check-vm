@@ -139,6 +139,14 @@ stored in the `data` field of each result. The page you receive lives in a
 fresh context, so log-ins, cookies and storage from other tasks are never
 visible.
 
+A worked example ships in `my_handlers.py`: `extract_page` reads the title,
+the first heading and the link count, and saves a screenshot per task under
+`screenshots/`. Try it with
+`python main.py --handler my_handlers:extract_page`, then read the comments
+in that file to see why each Playwright call is written the way it is. Its
+tests in `tests/test_my_handlers.py` show how to test a handler of your own
+against the local server in `tests/conftest.py`.
+
 ## Reading the results
 
 `results.json` is a list of objects:
