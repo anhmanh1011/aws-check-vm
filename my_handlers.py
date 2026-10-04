@@ -42,7 +42,8 @@ from typing import Any
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-import omocaptcha
+# import omocaptcha
+import ddddocr
 from actions import capture, click, fill, goto, sleep
 from models import Task
 
@@ -146,6 +147,10 @@ async def process_lines(page: Page, task: Task) -> dict[str, Any]:
 # were found by inspecting the live DOM; they are the stable ones (the ids on
 # the input and the icon buttons are regenerated per render, so they are
 # avoided in favour of name/alt/type).
+_ACCOUNT_NOT_FOUND_TEXT = (
+    "An AWS account with that sign-in information does not exist"
+)
+
 _CAPTCHA_FRAME = "iframe#core-container"          # the only iframe in the modal
 _CAPTCHA_IMAGE = "img[alt='captcha']"             # 200x70 distorted-text image
 _CAPTCHA_INPUT = "input[name='captchaGuess']"     # the "Verification answer" box
@@ -166,6 +171,22 @@ _CAPTCHA_OPEN_TIMEOUT_MS = 20_000
 # Verdict check after a submit: short, because "did it clear?" must not cost the
 # full open-timeout on the (common) success path.
 _CAPTCHA_CLEAR_TIMEOUT_MS = 5_000
+
+_ocr = ddddocr.DdddOcr(show_ad=False)
+
+
+def _ocr_solve(image_bytes: bytes) -> str:
+    return _ocr.classification(image_bytes)
+
+
+async def _account_not_found(page: Page) -> bool:
+    """Return True when AWS shows the 'account does not exist' error banner."""
+    return await page.get_by_text(_ACCOUNT_NOT_FOUND_TEXT, exact=False).is_visible()
+
+
+async def _password_page(page: Page) -> bool:
+    """Return True when AWS landed on the password step (account exists)."""
+    return await page.get_by_text("Enter the password for", exact=False).is_visible()
 
 
 async def _open_captcha(page: Page) -> bool:
@@ -222,33 +243,24 @@ async def _captcha_present(page: Page, timeout_ms: int) -> bool:
         return False
 
 
-async def check_VM(page: Page, task: Task) -> dict[str, Any]:
-    """Walk AWS root sign-in, solve the security CAPTCHA via OmoCaptcha, submit.
+async def _check_one_email(page: Page, task_id: int, email: str, pos: int) -> dict[str, Any]:
+    """Check a single email against AWS sign-in. Returns one result dict."""
+    label = f"[task {task_id}][{pos}] {email}"
+    log.info("%s START", label)
 
-    The CAPTCHA image sits in a **cross-origin iframe** (``iframe#core-container``),
-    so it cannot be reached with ``page.locator`` nor refetched from its ``src``
-    (an S3 URL bound to this session); it is addressed through
-    ``page.frame_locator`` and captured as rendered pixels. The PNG goes to
-    OmoCaptcha, whose ``solve`` blocks on HTTP plus polling -- hence
-    ``asyncio.to_thread``, so the other workers' event loop is not frozen.
-
-    A wrong answer is retried up to ``_CAPTCHA_MAX_ATTEMPTS`` times: ``solve`` ->
-    fill -> submit, re-opening the fresh challenge each round via ``_open_captcha``.
-
-    Verdict (verified live): submitting the *right* answer removes the CAPTCHA
-    iframe and the Verify button and advances the flow (with a real root email,
-    to the password step); a *wrong* answer re-presents the challenge. So right
-    after a submit, "no CAPTCHA present" means we got past it. ``solved`` here is
-    "the CAPTCHA gate was passed", independent of whether the account then
-    exists -- a non-existent email still passes the CAPTCHA and lands on the
-    sign-in error page, which is not a CAPTCHA.
-
-    Returns ``{"solved": bool, "attempts": [{"attempt", "answer", "image"}, ...]}``.
-    The OmoCaptcha client key is read from ``omocaptcha.txt`` (gitignored).
-    """
+    log.info("%s Opening AWS sign-in page", label)
     await goto(page, FORM_URL)
+    await sleep(2)
+
+    log.info("%s Selecting Root user", label)
     await click(page, "#root_account_signin")
-    await fill(page, "#resolving_input", "daoducmasssnh28101997@gmail.com")
+    await sleep(2)
+
+    log.info("%s Filling email", label)
+    await fill(page, "#resolving_input", email)
+    await sleep(2)
+
+    log.info("%s Clicking Next", label)
     await click(page, "#next_button")
 
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -256,36 +268,60 @@ async def check_VM(page: Page, task: Task) -> dict[str, Any]:
     solved = False
 
     for attempt in range(1, _CAPTCHA_MAX_ATTEMPTS + 1):
+        log.info("%s Waiting for CAPTCHA (attempt %d/%d)", label, attempt, _CAPTCHA_MAX_ATTEMPTS)
         if not await _open_captcha(page):
-            log.info("check_VM: no CAPTCHA on screen at attempt %d; stopping", attempt)
-            break  # no challenge presented -> nothing (more) to solve
+            log.info("%s No CAPTCHA on screen — skipping", label)
+            break
 
-        # frame_locator().locator() is a normal Locator, so capture waits for
-        # visibility and crops to just the 200x70 image, returning its bytes.
-        image_path = SCREENSHOT_DIR / f"captcha-{task.id}-{attempt}.png"
+        image_path = SCREENSHOT_DIR / f"captcha-{task_id}-{pos}-{attempt}.png"
         image_bytes = await capture(
             page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE), image_path
         )
-        log.info("check_VM attempt %d: captcha captured -> %s, solving", attempt, image_path)
+        log.info("%s CAPTCHA captured -> %s", label, image_path)
 
-        answer = await asyncio.to_thread(omocaptcha.solve, image_bytes)
-        log.info("check_VM attempt %d: OmoCaptcha answered %r", attempt, answer)
+        # answer = await asyncio.to_thread(omocaptcha.solve, image_bytes)
+        answer = await asyncio.to_thread(_ocr_solve, image_bytes)
+        log.info("%s OCR answer: %r", label, answer)
 
         frame = page.frame_locator(_CAPTCHA_FRAME)
         await frame.locator(_CAPTCHA_INPUT).fill(answer)
         await frame.locator(_CAPTCHA_SUBMIT).click()
         attempts.append({"attempt": attempt, "answer": answer, "image": str(image_path)})
-        log.info("check_VM attempt %d: submitted %r", attempt, answer)
+        log.info("%s Submitted CAPTCHA answer: %r", label, answer)
 
-        await sleep(_CAPTCHA_SETTLE_S)  # actions.sleep is in SECONDS
+        await sleep(_CAPTCHA_SETTLE_S)
 
-        # Right answer -> the challenge is gone; wrong -> a fresh one is back.
         if not await _captcha_present(page, _CAPTCHA_CLEAR_TIMEOUT_MS):
             solved = True
-            log.info("check_VM attempt %d: CAPTCHA passed", attempt)
+            log.info("%s CAPTCHA PASSED on attempt %d", label, attempt)
             break
-        log.info("check_VM attempt %d: still challenged, retrying", attempt)
+        log.info("%s Wrong answer, retrying...", label)
 
-    log.info("check_VM: solved=%s after %d attempt(s)", solved, len(attempts))
-    return {"solved": solved, "attempts": attempts}
+    not_found = await _account_not_found(page)
+    on_password_page = await _password_page(page)
+
+    if not_found:
+        status = "account_not_found"
+    elif on_password_page:
+        status = "account_exists"
+    elif solved:
+        status = "captcha_passed_unknown_page"
+    else:
+        status = "captcha_failed"
+
+    log.info("%s DONE status=%s attempts=%d", label, status, len(attempts))
+    return {"email": email, "status": status, "solved": solved, "attempts": attempts}
+
+
+async def check_VM(page: Page, task: Task) -> dict[str, Any]:
+    """Check every email in task.lines against AWS root sign-in.
+
+    Pass multiple emails per task via --batch-size N, or one email per task
+    (default). Returns ``{"results": [{"email", "status", "solved", "attempts"}, ...]}``.
+    """
+    results: list[dict[str, Any]] = []
+    for pos, email in enumerate(task.lines, start=1):
+        result = await _check_one_email(page, task.id, email.strip(), pos)
+        results.append(result)
+    return {"results": results}
 

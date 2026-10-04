@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="results file; .json or .csv (default: %(default)s)")
     parser.add_argument("--handler", default=DEFAULT_HANDLER,
                         help="per-task coroutine as module:function (default: %(default)s)")
-    parser.add_argument("--timeout", type=float, default=30.0,
+    parser.add_argument("--timeout", type=float, default=60.0,
                         help="seconds allowed per task (default: %(default)s)")
     parser.add_argument("--no-dashboard", action="store_true",
                         help="print log lines instead of the live table (useful in CI)")

@@ -1,6 +1,7 @@
 # Runtime
 playwright>=1.47
 rich>=13.7
+ddddocr>=1.4
 
 # Development / tests
 pytest>=8
