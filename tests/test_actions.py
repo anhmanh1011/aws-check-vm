@@ -63,6 +63,30 @@ async def test_click_raises_when_selector_never_appears(local_server):
         await cleanup()
 
 
+async def test_capture_screenshots_one_element_and_returns_png_bytes(local_server, tmp_path):
+    page, cleanup = await _page()
+    try:
+        await actions.goto(page, f"{local_server}/page")
+        out = tmp_path / "shot.png"
+        data = await actions.capture(page.locator("h1"), out)
+        # Returns the PNG bytes and writes the same bytes to the path.
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        assert out.read_bytes() == data
+    finally:
+        await cleanup()
+
+
+async def test_capture_raises_when_element_never_appears(local_server, tmp_path):
+    page, cleanup = await _page()
+    try:
+        await actions.goto(page, f"{local_server}/page")
+        with pytest.raises(Exception) as excinfo:
+            await actions.capture(page.locator("#nope"), tmp_path / "x.png", timeout_ms=500)
+        assert "Timeout" in str(excinfo.value) or "timeout" in str(excinfo.value)
+    finally:
+        await cleanup()
+
+
 async def test_sleep_waits_at_least_the_requested_time():
     start = time.monotonic()
     await actions.sleep(0.2)

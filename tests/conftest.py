@@ -65,8 +65,10 @@ _FORM_HTML = """<!doctype html>
 
 
 class _EchoHandler(BaseHTTPRequestHandler):
-    """Routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
-    ``/slow`` -> 3 s delay, ``/boom`` -> 500, ``/proxies/new`` -> KiotProxy-shaped JSON (failure when key=badkey)."""
+    """GET routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
+    ``/slow`` -> 3 s delay, ``/boom`` -> 500, ``/proxies/new`` -> KiotProxy-shaped JSON (failure when key=badkey).
+    POST routes: ``/createTask``, ``/getTaskResult``, ``/getBalance`` -> OmoCaptcha-shaped JSON
+    (failure when clientKey=badkey; ``/getTaskResult`` returns a fail status for taskId=task-fail)."""
 
     def do_GET(self) -> None:  # noqa: N802 (name mandated by BaseHTTPRequestHandler)
         if self.path.startswith("/ip"):
@@ -106,6 +108,43 @@ class _EchoHandler(BaseHTTPRequestHandler):
                     },
                     "success": True, "code": 200, "status": "SUCCESS",
                 }
+            self._send(200, json.dumps(body), "application/json")
+        else:
+            self._send(404, "not found", "text/plain")
+
+    def do_POST(self) -> None:  # noqa: N802 (name mandated by BaseHTTPRequestHandler)
+        # OmoCaptcha-shaped JSON routes. The body is read so a handler under
+        # test exercises the real request/response round-trip; clientKey
+        # "badkey" and taskId "task-fail" drive the error branches.
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except json.JSONDecodeError:
+            payload = {}
+        client_key = payload.get("clientKey", "")
+        task_id = payload.get("taskId", "")
+
+        if self.path.startswith("/createTask"):
+            if client_key == "badkey":
+                body = {"errorId": 1, "errorCode": "ERROR_KEY_DOES_NOT_EXIST",
+                        "errorDescription": "API key does not exist"}
+            else:
+                body = {"errorId": 0, "taskId": "task-123"}
+            self._send(200, json.dumps(body), "application/json")
+        elif self.path.startswith("/getTaskResult"):
+            if task_id == "task-fail":
+                body = {"errorId": 1, "errorCode": "ERROR_JOB_STATUS",
+                        "errorDescription": "Job failed", "status": "fail", "solution": {}}
+            else:
+                body = {"errorId": 0, "status": "ready", "solution": {"text": "ABCD12"}}
+            self._send(200, json.dumps(body), "application/json")
+        elif self.path.startswith("/getBalance"):
+            if client_key == "badkey":
+                body = {"errorId": 1, "errorCode": "ERROR_KEY_DOES_NOT_EXIST",
+                        "errorDescription": "API key does not exist"}
+            else:
+                body = {"errorId": 0, "errorCode": "", "errorDescription": "",
+                        "balance": "50.00000", "voucherBalance": "0"}
             self._send(200, json.dumps(body), "application/json")
         else:
             self._send(404, "not found", "text/plain")

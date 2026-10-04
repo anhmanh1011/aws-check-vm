@@ -174,9 +174,16 @@ visible.
 
 To keep a flow short, `actions.py` wraps the common steps so each one waits
 for its element to be visible first: `goto`, `click`, `fill`, `get_text`,
-`wait` (returns a locator), and `sleep`. They raise on timeout, which the
-engine records as a `failed` result. Import what you need:
-`from actions import goto, click, fill, get_text, sleep`.
+`wait` (returns a locator), `capture` (screenshots one element to a file and
+returns its PNG bytes), and `sleep`. They raise on timeout, which the engine
+records as a `failed` result. Import what you need:
+`from actions import goto, click, fill, get_text, capture, sleep`.
+
+`capture` takes a `Locator` rather than a selector, so it also works on an
+element inside an iframe reached with `page.frame_locator(...).locator(...)`.
+The `check_VM` example uses it to save the AWS sign-in CAPTCHA, which lives in
+a cross-origin iframe (`iframe#core-container`) and so cannot be read through
+`page.locator` or refetched from its session-bound `src`.
 
 Two worked examples ship in `my_handlers.py`. `extract_page` treats each
 line as a URL: it reads the title, the first heading and the link count, and
@@ -187,6 +194,33 @@ site the flow itself chooses, reusing the same page for the whole batch. Try
 in that file to see why each Playwright call is written the way it is. The
 tests in `tests/test_my_handlers.py` show how to test a handler of your own
 against the local server in `tests/conftest.py`.
+
+## Solving image CAPTCHAs (OmoCaptcha)
+
+`omocaptcha.py` turns a CAPTCHA picture into text through the
+[OmoCaptcha](https://omocaptcha.com) API, with no new dependencies (stdlib
+`urllib`). A handler captures the image and asks one function:
+
+```python
+import asyncio, omocaptcha
+from actions import capture
+
+image_bytes = await capture(page.frame_locator("iframe#core-container")
+                                .locator("img[alt='captcha']"), "captcha.png")
+answer = await asyncio.to_thread(omocaptcha.solve, image_bytes)
+```
+
+`solve` submits the image, then polls every 2 s until the service returns the
+text (or `max_wait_s` elapses). It **blocks** on HTTP and polling, so always
+call it through `asyncio.to_thread` — a bare call would freeze the single event
+loop and every other worker with it. The client key is read from
+`omocaptcha.txt` (one key per line, gitignored); pass `client_key=` to override.
+`omocaptcha.get_balance()` returns the account balance. The key is masked in
+logs and the base64 image is never logged.
+
+The `check_VM` example in `my_handlers.py` wires this into the real AWS
+root-user sign-in: it walks to the "Security Verification" modal, solves the
+CAPTCHA, submits, and retries up to three times on a wrong answer.
 
 ## Reading the results
 

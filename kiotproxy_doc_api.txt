@@ -1,0 +1,118 @@
+Tài liệu API KiotProxy
+1. Giới thiệu
+Dữ liệu của Proxy sẽ bao gồm các trường như sau:
+
+realIpAddress - Địa chỉ IP thực của proxy đó
+http - Giá trị của Proxy HTTP, theo định dạng 'ip:port'
+socks5 - Giá trị của Proxy SOCKS5, theo định dạng 'ip:port'
+httpPort - Cổng dịch vụ proxy với giao thức HTTP
+socks5Port - Cổng dịch vụ proxy với giao thức SOCKS5
+host - Địa chỉ của proxy server
+location - Địa điểm theo từng khu vực
+expirationAt - Thời gian proxy sẽ hết hạn
+ttl - Thời gian sống tối đa của Proxy đó (theo giây)
+ttc - Thời gian còn lại cho tới lượt đổi Proxy tiếp theo (theo giây)
+Lưu ý: Chúng tôi sẽ không cung cấp cho các khách hàng lạm dụng dịch vụ, quý khách lưu ý có thể bị chấm dứt hoạt động nếu vi phạm các điều khoản và chính sách của chúng tôi.
+
+2. Lấy Proxy mới/ Đổi Proxy
+Mô tả: API này cho phép người dùng có thể lấy proxy mới hoặc đổi proxy khác (khi key đó đã đến thời gian được đổi) theo từng proxy key.
+
+Đường dẫn: 
+https://api.kiotproxy.com/api/v1/proxies/new
+Phương thức: GET
+Dữ liệu (Tham số):
+key=[Giá trị của Key]
+region=[Giá trị của vùng]
+Người dùng có thể lựa chọn vùng (region) theo 4 giá trị sau, khi truyền các giá trị như ở dưới đây, KP sẽ trả ra proxy có vị trí địa lý đặt ở các vùng tương ứng:
+'bac' = Proxy có vị trí địa lý tại các tỉnh miền Bắc. Ví dụ: Hải Phòng, Quảng Ninh, Phú Thọ,...
+'trung' = Proxy có vị trí địa lý tại các tỉnh miền Trung. Ví dụ: Thanh Hóa, Bình Thuận, Đà Nẵng,...
+'nam' = Proxy có vị trí địa lý tại các tỉnh miền Nam. Ví dụ: TP.Hồ Chí Minh, An Giang, Cà Mau,...
+'random' = Sẽ lựa chọn ngẫu nhiên Proxy trên toàn bộ hệ thống. Không phân biệt vùng nào.
+Ví dụ: GET - 
+https://api.kiotproxy.com/api/v1/proxies/new?key=K98ce716...bbc89&region=bac
+Thành Công:
+{
+  "data": {
+    "realIpAddress": "171.229.xxx.xxx",
+    "http": "171.229.xxx.xxx:39008",
+    "socks5": "171.229.xxx.xxx:39009",
+    "nextRequestAt": 1718029591927,
+    "httpPort": 39008,
+    "socks5Port": 39009,
+    "host": "171.229.xxx.xxx",
+    "location": "Phú Thọ",
+    "expirationAt": 1718030731927,
+    "ttl": 1200,
+    "ttc": 59
+  },
+  "success": true,
+  "code": 200,
+  "timestamp": 1718029532890,
+  "status": "SUCCESS"
+}
+Thất Bại:
+{
+  "success": false,
+  "code": 40400006,
+  "message": "Key not found",
+  "timestamp": 1718032727635,
+  "status": "FAIL",
+  "error": "KEY_NOT_FOUND"
+}
+3. Lấy thông tin Proxy hiện tại
+Mô tả: API này cho phép người dùng lấy thông tin Proxy hiện tại được gán với Key đang dùng.
+
+Đường dẫn: 
+https://api.kiotproxy.com/api/v1/proxies/current
+Phương thức: GET
+Dữ liệu (Tham số):
+key=[Giá trị của Key]
+Ví dụ: GET - 
+https://api.kiotproxy.com/api/v1/proxies/current?key=K98ce716...bbc89
+Thành Công:
+{
+  "data": {
+    "realIpAddress": "171.229.xxx.xxx",
+    "http": "171.229.xxx.xxx:39008",
+    "socks5": "171.229.xxx.xxx:39009",
+    "nextRequestAt": 1718029591927,
+    "httpPort": 39008,
+    "socks5Port": 39009,
+    "host": "171.229.xxx.xxx",
+    "location": "Phú Thọ",
+    "expirationAt": 1718030731927,
+    "ttl": 1200,
+    "ttc": 59
+  },
+  "success": true,
+  "code": 200,
+  "timestamp": 1718029532890,
+  "status": "SUCCESS"
+}
+Thất Bại:
+{
+  "success": false,
+  "code": 40001050,
+  "message": "Could not find the proxy being used by key Ke4bb685...c24c47",
+  "timestamp": 1718033452278,
+  "status": "FAIL",
+  "error": "PROXY_NOT_FOUND_BY_KEY"
+}
+4. Thoát Proxy ra khỏi Key
+Mô tả: API này cho phép người dùng thoát Proxy ra khỏi Key hiện tại khi không sử dụng nữa.
+
+Đường dẫn: 
+https://api.kiotproxy.com/api/v1/proxies/out
+Phương thức: GET
+Dữ liệu (Tham số):
+key=[Giá trị của Key]
+Ví dụ: GET - 
+https://api.kiotproxy.com/api/v1/proxies/out?key=K98ce716...bbc89
+Thành Công:
+{
+  "data": true,
+  "success": true,
+  "code": 200,
+  "timestamp": 1718033447504,
+  "status": "SUCCESS"
+}

@@ -33,15 +33,20 @@ it into one fixed site that the flow itself chooses.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from pathlib import Path
 from time import time
 from typing import Any
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from actions import click, fill, goto
+import omocaptcha
+from actions import capture, click, fill, goto, sleep
 from models import Task
+
+log = logging.getLogger(__name__)
 
 # Screenshots are written here; the folder is created on first use and is
 # git-ignored. Tests point this at a temporary directory.
@@ -137,17 +142,150 @@ async def process_lines(page: Page, task: Task) -> dict[str, Any]:
 
     return {"processed": processed}
 
-async def check_VM(page: Page, task: Task) -> dict[str, Any]:
-    """Open the AWS sign-in page and start the root-account email step.
+# The AWS sign-in CAPTCHA lives inside a cross-origin iframe. These anchors
+# were found by inspecting the live DOM; they are the stable ones (the ids on
+# the input and the icon buttons are regenerated per render, so they are
+# avoided in favour of name/alt/type).
+_CAPTCHA_FRAME = "iframe#core-container"          # the only iframe in the modal
+_CAPTCHA_IMAGE = "img[alt='captcha']"             # 200x70 distorted-text image
+_CAPTCHA_INPUT = "input[name='captchaGuess']"     # the "Verification answer" box
+_CAPTCHA_SUBMIT = "button[type='submit']"         # the Submit button
+_CAPTCHA_NEW_IMAGE = "button:has(img[alt='Display new security image.'])"
 
-    Written with the ``actions`` helpers: each call waits for its element to
-    be visible before acting, so there is no manual ``wait_for_selector`` or
-    bare ``sleep``.
+# A wrong answer makes AWS discard the challenge (the iframe detaches) and
+# present a fresh one, so the solver gets a few tries. Kept small -- every try
+# is a paid OmoCaptcha solve.
+_CAPTCHA_MAX_ATTEMPTS = 3
+# After Submit, how long to let AWS accept or re-challenge before we judge it.
+_CAPTCHA_SETTLE_S = 2.0
+# After clicking Next, AWS auto-opens the "Security Verification" modal, but the
+# iframe + the S3 image take a few seconds to render. Wait generously for the
+# image rather than racing it -- the earlier 2 s wait expired before the image
+# appeared, which made the handler give up without ever solving anything.
+_CAPTCHA_OPEN_TIMEOUT_MS = 20_000
+# Verdict check after a submit: short, because "did it clear?" must not cost the
+# full open-timeout on the (common) success path.
+_CAPTCHA_CLEAR_TIMEOUT_MS = 5_000
+
+
+async def _open_captcha(page: Page) -> bool:
+    """Ensure a CAPTCHA challenge is on screen; return True if its image is visible.
+
+    After Next (and, as observed live, after a wrong answer) AWS auto-opens the
+    modal, so the normal path is simply to wait for the image to render. Only if
+    no image appears at all do we fall back to clicking the "Making sure its you"
+    Verify button to start the challenge manually. Return False when neither the
+    image nor a startable Verify button yields an image -- i.e. no challenge is
+    being presented and we are past it.
+
+    WHY not click Verify first: once the modal is open the Verify button sits
+    *behind* it and is unclickable, so clicking it there just times out. The
+    image wait is both the common case and the reliable signal.
+    """
+    image = page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE)
+    try:
+        await image.wait_for(state="visible", timeout=_CAPTCHA_OPEN_TIMEOUT_MS)
+        return True
+    except PlaywrightTimeoutError:
+        pass
+    # No challenge auto-opened: try to start one via the Verify button.
+    try:
+        await page.get_by_role("button", name="Verify").click(timeout=5_000)
+    except PlaywrightTimeoutError:
+        return False  # no Verify button -> nothing to open
+    try:
+        await image.wait_for(state="visible", timeout=_CAPTCHA_OPEN_TIMEOUT_MS)
+        return True
+    except PlaywrightTimeoutError:
+        return False
+
+
+async def _captcha_present(page: Page, timeout_ms: int) -> bool:
+    """Fast read: is a CAPTCHA challenge on screen (image visible, or the Verify
+    button that would start one)?
+
+    Used after a submit to decide whether the check cleared. Unlike
+    ``_open_captcha`` it never clicks anything, so the "did we get past it?"
+    decision is cheap: a passed answer removes both the image and the Verify
+    button, a wrong one brings one of them back.
+    """
+    try:
+        if await page.get_by_role("button", name="Verify").is_visible():
+            return True
+    except PlaywrightTimeoutError:
+        pass
+    image = page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE)
+    try:
+        await image.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    except PlaywrightTimeoutError:
+        return False
+
+
+async def check_VM(page: Page, task: Task) -> dict[str, Any]:
+    """Walk AWS root sign-in, solve the security CAPTCHA via OmoCaptcha, submit.
+
+    The CAPTCHA image sits in a **cross-origin iframe** (``iframe#core-container``),
+    so it cannot be reached with ``page.locator`` nor refetched from its ``src``
+    (an S3 URL bound to this session); it is addressed through
+    ``page.frame_locator`` and captured as rendered pixels. The PNG goes to
+    OmoCaptcha, whose ``solve`` blocks on HTTP plus polling -- hence
+    ``asyncio.to_thread``, so the other workers' event loop is not frozen.
+
+    A wrong answer is retried up to ``_CAPTCHA_MAX_ATTEMPTS`` times: ``solve`` ->
+    fill -> submit, re-opening the fresh challenge each round via ``_open_captcha``.
+
+    Verdict (verified live): submitting the *right* answer removes the CAPTCHA
+    iframe and the Verify button and advances the flow (with a real root email,
+    to the password step); a *wrong* answer re-presents the challenge. So right
+    after a submit, "no CAPTCHA present" means we got past it. ``solved`` here is
+    "the CAPTCHA gate was passed", independent of whether the account then
+    exists -- a non-existent email still passes the CAPTCHA and lands on the
+    sign-in error page, which is not a CAPTCHA.
+
+    Returns ``{"solved": bool, "attempts": [{"attempt", "answer", "image"}, ...]}``.
+    The OmoCaptcha client key is read from ``omocaptcha.txt`` (gitignored).
     """
     await goto(page, FORM_URL)
     await click(page, "#root_account_signin")
-    await fill(page, "#resolving_input", "daoducmanh28101997@gmail.com")
+    await fill(page, "#resolving_input", "daoducmasssnh28101997@gmail.com")
     await click(page, "#next_button")
 
-    return {"processed": []}
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    attempts: list[dict[str, Any]] = []
+    solved = False
+
+    for attempt in range(1, _CAPTCHA_MAX_ATTEMPTS + 1):
+        if not await _open_captcha(page):
+            log.info("check_VM: no CAPTCHA on screen at attempt %d; stopping", attempt)
+            break  # no challenge presented -> nothing (more) to solve
+
+        # frame_locator().locator() is a normal Locator, so capture waits for
+        # visibility and crops to just the 200x70 image, returning its bytes.
+        image_path = SCREENSHOT_DIR / f"captcha-{task.id}-{attempt}.png"
+        image_bytes = await capture(
+            page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE), image_path
+        )
+        log.info("check_VM attempt %d: captcha captured -> %s, solving", attempt, image_path)
+
+        answer = await asyncio.to_thread(omocaptcha.solve, image_bytes)
+        log.info("check_VM attempt %d: OmoCaptcha answered %r", attempt, answer)
+
+        frame = page.frame_locator(_CAPTCHA_FRAME)
+        await frame.locator(_CAPTCHA_INPUT).fill(answer)
+        await frame.locator(_CAPTCHA_SUBMIT).click()
+        attempts.append({"attempt": attempt, "answer": answer, "image": str(image_path)})
+        log.info("check_VM attempt %d: submitted %r", attempt, answer)
+
+        await sleep(_CAPTCHA_SETTLE_S)  # actions.sleep is in SECONDS
+
+        # Right answer -> the challenge is gone; wrong -> a fresh one is back.
+        if not await _captcha_present(page, _CAPTCHA_CLEAR_TIMEOUT_MS):
+            solved = True
+            log.info("check_VM attempt %d: CAPTCHA passed", attempt)
+            break
+        log.info("check_VM attempt %d: still challenged, retrying", attempt)
+
+    log.info("check_VM: solved=%s after %d attempt(s)", solved, len(attempts))
+    return {"solved": solved, "attempts": attempts}
 
