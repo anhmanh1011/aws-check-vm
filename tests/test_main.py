@@ -24,7 +24,7 @@ def test_parser_defaults():
     assert args.headless is True
     assert args.output == Path("results.json")
     assert args.handler == "handlers:fetch_ip"
-    assert args.timeout == 30.0
+    assert args.timeout == 60.0
     assert args.no_dashboard is False
     assert args.verbose is False
 
