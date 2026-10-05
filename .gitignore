@@ -5,7 +5,11 @@ __pycache__/
 .venv/
 results.json
 results.csv
+exists.txt
+not_found.txt
+error.txt
 run.log
 screenshots/
 keys.txt
 omocaptcha.txt
+emails.txt

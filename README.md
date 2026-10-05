@@ -20,7 +20,7 @@ Common variations:
 
 ```bash
 python main.py --concurrency 5 --output results.csv
-python main.py --no-headless --timeout 60        # watch the browser work
+python main.py --no-headless --timeout 60        # watch the browser work (windows auto-tile)
 python main.py --no-dashboard                     # plain logs, good for CI
 python main.py --input emails.txt --batch-size 10 # 10 lines per browser context
 python main.py --handler my_handlers:process_lines # your own flow over the lines
@@ -102,6 +102,10 @@ Proxies are assigned **round-robin**: the first context gets proxy 1, the
 second gets proxy 2, and the pool wraps around when exhausted. A missing or
 empty `proxies.txt` makes every context connect directly, with a warning.
 
+Pass `--proxy-per-worker` to pin each worker to one fixed proxy for the whole
+run instead (worker *i* always uses proxy *i*), so every browser lane keeps a
+separate IP. This is auto-enabled by `--kiot-keys`.
+
 **Chromium limitation:** authenticated SOCKS5 proxies are not supported by
 Chromium; the credentials are ignored. Use HTTP proxies when you need
 authentication.
@@ -113,15 +117,21 @@ Instead of a static `proxies.txt`, the pool can come from the
 pass it:
 
 ```bash
-python main.py --kiot-keys keys.txt --kiot-region random --concurrency 3
+python main.py --kiot-keys keys.txt --kiot-region random
 ```
 
-Each key yields **one** IP at a time, so the pool is as wide as the number of
-keys: three keys give three simultaneous IPs round-robined across contexts.
-`--kiot-region` is one of `bac`, `trung`, `nam`, `random`. The framework calls
-`/proxies/new` once per key at startup and uses the HTTP proxy it returns; it
-does not rotate IPs mid-run. A key that the API rejects is logged (masked) and
-skipped; if every key fails the run continues with no proxy.
+Each key yields **one** IP at a time. The framework gives **each proxy its own
+worker and pins it there for the whole run**: `N` keys become `N` workers, so
+every browser lane keeps a fixed, separate IP from start to finish. This sets
+concurrency automatically — `--concurrency` is **overridden** (three keys →
+three workers, whatever `--concurrency` says). `--kiot-region` is one of `bac`,
+`trung`, `nam`, `random`. The framework calls `/proxies/new` once per key at
+startup and does not rotate IPs mid-run. If `/proxies/new` fails for a key
+(resources busy, or the key is still inside its rotation window), it falls back
+to `/proxies/current` to use the IP that key already holds, so a transient
+outage does not drop the key. A key is skipped (logged, masked) only when
+*both* endpoints fail; if every key fails the run continues as a single direct
+worker.
 
 `--kiot-keys` replaces `--proxies` when both are present. Keep your key file
 out of version control: `keys.txt` is already in `.gitignore`.
@@ -138,8 +148,8 @@ run ends when every line has been processed.
 
 | Value | Meaning |
 | --- | --- |
-| `1` (default) | one line per context: maximum isolation, one task per line |
-| `N` | fixed batches of N lines; 1000 lines with `N=10` become 100 tasks that the queue hands to whichever of the `--concurrency` workers is free |
+| `1` | one line per context: maximum isolation, one task per line |
+| `N` (default `3`) | fixed batches of N lines; 1000 lines with `N=10` become 100 tasks that the queue hands to whichever of the `--concurrency` workers is free |
 | `0` | auto: split evenly so every worker gets exactly one batch of `ceil(total / concurrency)` lines |
 
 Each batch is one `Task`, one browser context, one row in the results. The
@@ -174,15 +184,17 @@ visible.
 
 To keep a flow short, `actions.py` wraps the common steps so each one waits
 for its element to be visible first: `goto`, `click`, `fill`, `get_text`,
-`wait` (returns a locator), `capture` (screenshots one element to a file and
-returns its PNG bytes), and `sleep`. They raise on timeout, which the engine
+`wait` (returns a locator), `capture` (screenshots one element and returns its
+PNG bytes; pass a `path` to also save it, or omit it to keep the shot in
+memory), and `sleep`. They raise on timeout, which the engine
 records as a `failed` result. Import what you need:
 `from actions import goto, click, fill, get_text, capture, sleep`.
 
 `capture` takes a `Locator` rather than a selector, so it also works on an
 element inside an iframe reached with `page.frame_locator(...).locator(...)`.
-The `check_VM` example uses it to save the AWS sign-in CAPTCHA, which lives in
-a cross-origin iframe (`iframe#core-container`) and so cannot be read through
+The `check_VM` example uses it to grab the AWS sign-in CAPTCHA straight into
+memory and feed the OCR solver, no file written. The CAPTCHA lives in a
+cross-origin iframe (`iframe#core-container`) and so cannot be read through
 `page.locator` or refetched from its session-bound `src`.
 
 Two worked examples ship in `my_handlers.py`. `extract_page` treats each

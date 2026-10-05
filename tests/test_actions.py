@@ -76,6 +76,18 @@ async def test_capture_screenshots_one_element_and_returns_png_bytes(local_serve
         await cleanup()
 
 
+async def test_capture_returns_bytes_without_writing_a_file(local_server, tmp_path):
+    page, cleanup = await _page()
+    try:
+        await actions.goto(page, f"{local_server}/page")
+        data = await actions.capture(page.locator("h1"))  # no path -> buffer only
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        # Nothing should have been written to disk.
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        await cleanup()
+
+
 async def test_capture_raises_when_element_never_appears(local_server, tmp_path):
     page, cleanup = await _page()
     try:

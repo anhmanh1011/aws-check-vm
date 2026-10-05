@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Sequence
 from contextlib import suppress
@@ -35,6 +36,51 @@ from models import Proxy, RunState, Status, Task, TaskResult, WorkerStatus
 from proxy_manager import ProxyManager
 
 log = logging.getLogger(__name__)
+
+# Fallback screen size when it cannot be detected (non-Windows, or a headless
+# host). 1920x1080 is the most common desktop resolution.
+_DEFAULT_SCREEN = (1920, 1080)
+
+
+def tile_bounds(index: int, count: int, screen_w: int, screen_h: int) -> dict[str, int]:
+    """Return the ``{left, top, width, height}`` cell for window ``index`` of ``count``.
+
+    The windows tile a ``screen_w`` x ``screen_h`` screen in a near-square grid
+    (``ceil(sqrt(count))`` columns), so with ``--no-headless`` each worker's
+    window sits in its own cell instead of stacking at the origin. ``index`` is
+    taken modulo ``count`` so an out-of-range worker reuses a cell rather than
+    landing off-screen; ``count`` of 0 is treated as 1 (one full-screen window).
+    """
+    count = max(count, 1)
+    cols = math.ceil(math.sqrt(count))
+    rows = math.ceil(count / cols)
+    index %= count
+    width = screen_w // cols
+    height = screen_h // rows
+    return {
+        "left": (index % cols) * width,
+        "top": (index // cols) * height,
+        "width": width,
+        "height": height,
+    }
+
+
+def _detect_screen_size() -> tuple[int, int]:
+    """Best-effort primary-screen size in pixels; falls back to ``_DEFAULT_SCREEN``.
+
+    Uses the Win32 API on Windows (where this runs headed). ``ctypes.windll``
+    does not exist on other platforms, so the ``except`` returns the default.
+    """
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        if width > 0 and height > 0:
+            return width, height
+    except Exception:  # noqa: BLE001 - detection is best-effort
+        pass
+    return _DEFAULT_SCREEN
 
 # WHY: on Windows, Chromium only honours a per-context proxy when the browser
 # itself was launched with a proxy. Playwright documents a placeholder server
@@ -57,6 +103,8 @@ class AutomationEngine:
         timeout_s: float,
         state: RunState,
         browser_type: str = "chromium",
+        proxy_per_worker: bool = False,
+        screen_size: tuple[int, int] | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError(f"concurrency must be >= 1, got {concurrency}")
@@ -68,6 +116,14 @@ class AutomationEngine:
         self._timeout_s = timeout_s
         self._state = state
         self._browser_type = browser_type
+        # When True, each worker is pinned to one proxy for the whole run
+        # (worker i always uses proxy i-1) instead of pulling the next proxy in
+        # the shared round-robin for every task. This keeps each browser "lane"
+        # on a fixed IP -- the natural fit for one KiotProxy key per worker.
+        self._proxy_per_worker = proxy_per_worker
+        # Where to tile headed windows. Detected once here (cheap) and only
+        # actually used when running non-headless.
+        self._screen = screen_size or _detect_screen_size()
 
     async def run(self) -> list[TaskResult]:
         """Launch the browser, drain the task queue with N workers, close the browser."""
@@ -130,6 +186,10 @@ class AutomationEngine:
     ) -> None:
         """Consume tasks until the ``None`` sentinel arrives."""
         status = self._state.workers[worker_id]
+        # In per-worker mode the proxy is fixed for this worker's whole life.
+        pinned_proxy = (
+            self._proxy_manager.at(worker_id - 1) if self._proxy_per_worker else None
+        )
         while True:
             task = await queue.get()
             if task is None:
@@ -140,7 +200,7 @@ class AutomationEngine:
                 log.debug("worker %d finished", worker_id)
                 return
 
-            proxy = self._proxy_manager.next()
+            proxy = pinned_proxy if self._proxy_per_worker else self._proxy_manager.next()
             status.task = task
             status.proxy = proxy.masked() if proxy else None
             status.state = "running"
@@ -164,6 +224,29 @@ class AutomationEngine:
                      worker_id, task.id, result.status, result.duration_s,
                      f": {result.error}" if result.error else "")
 
+    async def _tile_window(
+        self, context: BrowserContext, page: Any, worker_id: int
+    ) -> None:
+        """Move/resize this context's window into worker ``worker_id``'s grid cell.
+
+        Chromium only. Uses CDP ``Browser.setWindowBounds``; any failure (an
+        unsupported build, a window already gone) is swallowed at DEBUG because
+        window placement must never turn a working task into a failed one.
+        """
+        bounds = tile_bounds(worker_id - 1, self._concurrency, *self._screen)
+        try:
+            cdp = await context.new_cdp_session(page)
+            try:
+                info = await cdp.send("Browser.getWindowForTarget")
+                await cdp.send(
+                    "Browser.setWindowBounds",
+                    {"windowId": info["windowId"], "bounds": {"windowState": "normal", **bounds}},
+                )
+            finally:
+                await cdp.detach()
+        except Exception as exc:  # noqa: BLE001 - tiling is cosmetic
+            log.debug("window tiling failed for worker %d: %s", worker_id, exc)
+
     async def _run_one(
         self, worker_id: int, task: Task, proxy: Proxy | None, browser: Browser
     ) -> TaskResult:
@@ -180,6 +263,11 @@ class AutomationEngine:
                 proxy=proxy.to_playwright() if proxy else None
             )
             page = await context.new_page()
+            # Headed runs open one window per context; without this they stack
+            # at the origin and hide each other. Tile each worker's window into
+            # its own screen cell. Cosmetic and best-effort: never fail a task.
+            if not self._headless and self._browser_type == "chromium":
+                await self._tile_window(context, page, worker_id)
             # ``wait_for`` cancels the handler if it overruns; the ``finally``
             # below still closes the context. The handler runs as its own
             # Task (rather than a bare coroutine) so that, after ``wait_for``

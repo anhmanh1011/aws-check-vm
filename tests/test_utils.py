@@ -90,3 +90,48 @@ def test_setup_logging_plain_mode_uses_rich_handler():
 
     setup_logging(verbose=False, dashboard_active=False)
     assert any(isinstance(h, RichHandler) for h in logging.getLogger().handlers)
+
+
+def _check_result(task_id, inputs, status="ok", email_rows=None, error=None):
+    """A TaskResult shaped like check_VM's output (data.results = per-email list)."""
+    return TaskResult(
+        task_id=task_id, name=f"task-{task_id}", inputs=list(inputs), worker_id=1,
+        proxy=None, status=status,  # type: ignore[arg-type]
+        started_at="2026-10-05T00:00:00+00:00", duration_s=1.0,
+        data={"results": email_rows} if email_rows is not None else {},
+        error=error,
+    )
+
+
+def test_write_split_outputs_buckets_emails_by_status(tmp_path):
+    from utils import write_split_outputs
+    rows = [
+        {"email": "a@x.com", "status": "account_exists"},
+        {"email": "b@x.com", "status": "account_not_found"},
+        {"email": "c@x.com", "status": "captcha_failed"},
+    ]
+    result = _check_result(1, [r["email"] for r in rows], email_rows=rows)
+    write_split_outputs([result], tmp_path)
+
+    assert (tmp_path / "exists.txt").read_text(encoding="utf-8") == "a@x.com\n"
+    assert (tmp_path / "not_found.txt").read_text(encoding="utf-8") == "b@x.com\n"
+    assert (tmp_path / "error.txt").read_text(encoding="utf-8") == "c@x.com\tcaptcha_failed\n"
+
+
+def test_write_split_outputs_sends_failed_task_inputs_to_error_file(tmp_path):
+    from utils import write_split_outputs
+    result = _check_result(1, ["d@x.com", "e@x.com"], status="timeout",
+                           email_rows=None, error="handler exceeded 60s")
+    write_split_outputs([result], tmp_path)
+
+    assert not (tmp_path / "exists.txt").exists()
+    assert (tmp_path / "error.txt").read_text(encoding="utf-8") == "d@x.com\ttimeout\ne@x.com\ttimeout\n"
+
+
+def test_write_split_outputs_appends_across_calls(tmp_path):
+    from utils import write_split_outputs
+    r1 = _check_result(1, ["a@x.com"], email_rows=[{"email": "a@x.com", "status": "account_exists"}])
+    r2 = _check_result(2, ["f@x.com"], email_rows=[{"email": "f@x.com", "status": "account_exists"}])
+    write_split_outputs([r1], tmp_path)
+    write_split_outputs([r2], tmp_path)
+    assert (tmp_path / "exists.txt").read_text(encoding="utf-8") == "a@x.com\nf@x.com\n"

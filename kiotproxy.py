@@ -130,14 +130,36 @@ def fetch_proxy(
     query = urllib.parse.urlencode({"key": key, "region": region})
     url = f"{resolved}/proxies/new?{query}"
 
-    payload = _get_json(url, timeout_s)
+    return _proxy_from_payload(_get_json(url, timeout_s))
+
+
+def fetch_current_proxy(
+    key: str, *, base_url: str | None = None, timeout_s: float = 15.0
+) -> Proxy:
+    """Fetch the proxy *currently* assigned to ``key`` via ``/proxies/current``.
+
+    Unlike ``fetch_proxy`` this never rotates to a new IP; it returns the one the
+    key already holds. Used as a fallback when ``/proxies/new`` fails (e.g. the
+    pool is temporarily out of resources, or the key is still inside its
+    rotation window). Takes no region -- ``/current`` ignores it.
+    """
+    resolved = base_url or BASE_URL
+    url = f"{resolved}/proxies/current?{urllib.parse.urlencode({'key': key})}"
+    return _proxy_from_payload(_get_json(url, timeout_s))
+
+
+def _proxy_from_payload(payload: dict[str, Any]) -> Proxy:
+    """Turn a KiotProxy success body into a ``Proxy``; raise ``KiotProxyError`` otherwise.
+
+    Shared by ``/proxies/new`` and ``/proxies/current``, whose success and
+    failure shapes are identical.
+    """
     if not payload.get("success"):
         raise KiotProxyError(
             payload.get("message", "KiotProxy request was not successful"),
             code=payload.get("code"),
             error=payload.get("error"),
         )
-
     http_value = (payload.get("data") or {}).get("http")
     if not http_value:
         raise KiotProxyError(f"KiotProxy success body has no 'http' field: {payload!r}")
@@ -149,15 +171,32 @@ def load_kiot_proxies(
 ) -> list[Proxy]:
     """Fetch a proxy for every key; skip (with a warning) any key that fails.
 
-    One bad key never stops the others. The returned list may be empty if
-    every key failed, which the caller treats as "run direct".
+    For each key, try ``/proxies/new`` first; if that fails (resources busy, or
+    the key still inside its rotation window), fall back to ``/proxies/current``
+    to use the IP the key already holds. A key is skipped only when *both*
+    endpoints fail, so a transient ``/new`` outage no longer silently drops a
+    key -- the reason both failed is logged (masked). One bad key never stops
+    the others; an empty result tells the caller to run direct.
     """
     proxies: list[Proxy] = []
     for key in keys:
         try:
             proxies.append(fetch_proxy(key, region, base_url=base_url))
-        except KiotProxyError as exc:
-            log.warning("KiotProxy key %s failed: %s", mask_key(key), exc)
+            continue
+        except KiotProxyError as new_exc:
+            try:
+                proxy = fetch_current_proxy(key, base_url=base_url)
+            except KiotProxyError as current_exc:
+                log.warning(
+                    "KiotProxy key %s failed: new=%s; current=%s",
+                    mask_key(key), new_exc, current_exc,
+                )
+                continue
+            log.info(
+                "KiotProxy key %s: /new failed (%s); using current proxy",
+                mask_key(key), new_exc,
+            )
+            proxies.append(proxy)
     if not proxies:
         log.warning("No usable KiotProxy proxies from %d key(s); running direct", len(keys))
     else:

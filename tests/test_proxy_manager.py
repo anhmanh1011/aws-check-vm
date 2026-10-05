@@ -121,3 +121,17 @@ def test_from_file_error_does_not_leak_credentials(tmp_path: Path):
     assert "proxies.txt:1" in error_text
     assert "***:***" in error_text
     assert "s3cret" not in error_text
+
+
+def test_at_returns_proxy_by_index_with_wraparound():
+    from models import Proxy
+    p0, p1 = Proxy(server="http://a:1"), Proxy(server="http://b:2")
+    manager = ProxyManager([p0, p1])
+    assert manager.at(0) == p0
+    assert manager.at(1) == p1
+    assert manager.at(2) == p0  # wraps around
+    assert manager.at(3) == p1
+
+
+def test_at_returns_none_when_pool_is_empty():
+    assert ProxyManager([]).at(0) is None

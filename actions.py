@@ -78,18 +78,23 @@ async def get_text(page: Page, selector: str, *, timeout_ms: int = DEFAULT_TIMEO
 
 
 async def capture(
-    locator: Locator, path: str | Path, *, timeout_ms: int = DEFAULT_TIMEOUT_MS
+    locator: Locator, path: str | Path | None = None, *, timeout_ms: int = DEFAULT_TIMEOUT_MS
 ) -> bytes:
     """Wait for ``locator`` to be visible, screenshot just that element, return its PNG bytes.
 
     Takes a ``Locator`` rather than ``(page, selector)`` so it works the same
     for a plain page element and for one inside an iframe reached with
     ``page.frame_locator(...).locator(...)`` -- which is how a cross-origin
-    widget such as the AWS sign-in CAPTCHA has to be addressed. The bytes are
-    both written to ``path`` and returned, so a caller can hand them to a
-    solver without reading the file back.
+    widget such as the AWS sign-in CAPTCHA has to be addressed.
+
+    The PNG bytes are always returned, so a caller can hand them straight to a
+    solver with no disk round-trip. ``path`` is optional: pass one to also save
+    the image (handy for debugging); leave it ``None`` to keep the shot purely
+    in memory.
     """
     await locator.wait_for(state="visible", timeout=timeout_ms)
+    if path is None:
+        return await locator.screenshot(timeout=timeout_ms)
     return await locator.screenshot(path=str(path), timeout=timeout_ms)
 
 

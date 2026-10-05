@@ -160,7 +160,7 @@ _CAPTCHA_NEW_IMAGE = "button:has(img[alt='Display new security image.'])"
 # A wrong answer makes AWS discard the challenge (the iframe detaches) and
 # present a fresh one, so the solver gets a few tries. Kept small -- every try
 # is a paid OmoCaptcha solve.
-_CAPTCHA_MAX_ATTEMPTS = 3
+_CAPTCHA_MAX_ATTEMPTS = 5
 # After Submit, how long to let AWS accept or re-challenge before we judge it.
 _CAPTCHA_SETTLE_S = 2.0
 # After clicking Next, AWS auto-opens the "Security Verification" modal, but the
@@ -263,21 +263,20 @@ async def _check_one_email(page: Page, task_id: int, email: str, pos: int) -> di
     log.info("%s Clicking Next", label)
     await click(page, "#next_button")
 
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     attempts: list[dict[str, Any]] = []
     solved = False
 
     for attempt in range(1, _CAPTCHA_MAX_ATTEMPTS + 1):
+        await sleep(2)  # let the modal settle before checking for a challenge
         log.info("%s Waiting for CAPTCHA (attempt %d/%d)", label, attempt, _CAPTCHA_MAX_ATTEMPTS)
         if not await _open_captcha(page):
             log.info("%s No CAPTCHA on screen — skipping", label)
             break
 
-        image_path = SCREENSHOT_DIR / f"captcha-{task_id}-{pos}-{attempt}.png"
-        image_bytes = await capture(
-            page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE), image_path
-        )
-        log.info("%s CAPTCHA captured -> %s", label, image_path)
+        # Screenshot straight to memory (no path) and hand the bytes to the OCR;
+        # there is no reason to touch the disk for a throwaway captcha image.
+        image_bytes = await capture(page.frame_locator(_CAPTCHA_FRAME).locator(_CAPTCHA_IMAGE))
+        log.info("%s CAPTCHA captured (%d bytes)", label, len(image_bytes))
 
         # answer = await asyncio.to_thread(omocaptcha.solve, image_bytes)
         answer = await asyncio.to_thread(_ocr_solve, image_bytes)
@@ -286,7 +285,7 @@ async def _check_one_email(page: Page, task_id: int, email: str, pos: int) -> di
         frame = page.frame_locator(_CAPTCHA_FRAME)
         await frame.locator(_CAPTCHA_INPUT).fill(answer)
         await frame.locator(_CAPTCHA_SUBMIT).click()
-        attempts.append({"attempt": attempt, "answer": answer, "image": str(image_path)})
+        attempts.append({"attempt": attempt, "answer": answer})
         log.info("%s Submitted CAPTCHA answer: %r", label, answer)
 
         await sleep(_CAPTCHA_SETTLE_S)

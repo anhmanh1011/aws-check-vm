@@ -218,3 +218,28 @@ async def test_unexpected_worker_error_cancels_siblings_and_closes_browser(
     ]
     assert len(runtime_errors) == 1
     assert str(runtime_errors[0]) == "worker crashed"
+
+
+async def test_proxy_per_worker_pins_each_worker_to_its_own_proxy(local_server):
+    # Two refuse-fast proxies so tasks fail quickly; we only assert which proxy
+    # each worker was assigned, not that the requests succeed.
+    p0 = Proxy(server="http://127.0.0.1:9")
+    p1 = Proxy(server="http://127.0.0.1:10")
+    tasks = _tasks(local_server, 6)
+    state = RunState(total=len(tasks))
+    engine = AutomationEngine(
+        tasks, ProxyManager([p0, p1]), fetch_ip,
+        concurrency=2, headless=True, timeout_s=30.0, state=state,
+        proxy_per_worker=True,
+    )
+    results = await engine.run()
+
+    by_worker: dict[int, set[str | None]] = {}
+    for r in results:
+        by_worker.setdefault(r.worker_id, set()).add(r.proxy)
+
+    # Each worker used exactly one proxy across all of its tasks (pinned),
+    # and worker i is pinned to proxy i-1.
+    assert all(len(proxies) == 1 for proxies in by_worker.values())
+    assert by_worker[1] == {p0.masked()}
+    assert by_worker[2] == {p1.masked()}

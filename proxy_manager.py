@@ -124,5 +124,16 @@ class ProxyManager:
             return None
         return next(self._cycle)
 
+    def at(self, index: int) -> Proxy | None:
+        """Return the proxy at ``index`` (wrapping around), or ``None`` if empty.
+
+        Used for "one proxy per worker" assignment: worker *i* always gets
+        ``at(i - 1)``, so each worker keeps a fixed proxy for the whole run
+        instead of sharing the round-robin rotation.
+        """
+        if not self._proxies:
+            return None
+        return self._proxies[index % len(self._proxies)]
+
     def __len__(self) -> int:
         return len(self._proxies)

@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def test_parser_defaults():
     args = build_parser().parse_args([])
     assert args.input == Path("input.txt")
-    assert args.batch_size == 1
+    assert args.batch_size == 3
     assert args.proxies == Path("proxies.txt")
     assert args.concurrency == 3
     assert args.headless is True
@@ -27,6 +27,18 @@ def test_parser_defaults():
     assert args.timeout == 60.0
     assert args.no_dashboard is False
     assert args.verbose is False
+    assert args.proxy_per_worker is False
+    assert args.screen_size is None
+    assert args.split_output is False
+
+
+def test_parser_screen_size_parses_wxh():
+    assert build_parser().parse_args(["--screen-size", "1920x1080"]).screen_size == (1920, 1080)
+
+
+def test_parser_rejects_bad_screen_size():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--screen-size", "wide"])
 
 
 def test_parser_no_headless_flag():
@@ -79,6 +91,42 @@ def test_kiot_keys_builds_pool_without_network(tmp_path, capsys, monkeypatch, lo
     # failed as bad input).
     assert code != 2
     assert "tasks finished" in capsys.readouterr().out
+
+
+def test_kiot_keys_sets_concurrency_to_proxy_count_and_pins(tmp_path, monkeypatch, local_server):
+    import kiotproxy
+    import main as main_mod
+    monkeypatch.setattr(kiotproxy, "BASE_URL", local_server)
+
+    captured: dict = {}
+
+    class _SpyEngine:
+        def __init__(self, tasks, proxy_manager, handler, *, concurrency,
+                     proxy_per_worker=False, **kwargs):
+            captured["concurrency"] = concurrency
+            captured["proxy_per_worker"] = proxy_per_worker
+
+        async def run(self):
+            return []
+
+    monkeypatch.setattr(main_mod, "AutomationEngine", _SpyEngine)
+    monkeypatch.setattr("main.asyncio.run", lambda coro: coro.close())
+
+    keyfile = tmp_path / "keys.txt"
+    keyfile.write_text("key1\nkey2\nkey3\n", encoding="utf-8")  # 3 keys -> 3 proxies
+    inp = tmp_path / "input.txt"
+    inp.write_text("a\nb\n", encoding="utf-8")
+
+    main([
+        "--kiot-keys", str(keyfile),
+        "--concurrency", "1",          # should be overridden to 3
+        "--input", str(inp),
+        "--output", str(tmp_path / "results.json"),
+        "--no-dashboard",
+    ])
+
+    assert captured["concurrency"] == 3
+    assert captured["proxy_per_worker"] is True
 
 
 def test_kiot_keys_missing_file_exits_2(tmp_path, capsys):
@@ -235,6 +283,7 @@ def test_cli_end_to_end_csv_with_failure_exits_1(local_server, tmp_path: Path):
             "--input", str(tasks),
             "--proxies", str(tmp_path / "absent.txt"),
             "--output", str(out),
+            "--batch-size", "1",  # one task per line so the ok/timeout split is two rows
             "--timeout", "1",
             "--no-dashboard",
         ],

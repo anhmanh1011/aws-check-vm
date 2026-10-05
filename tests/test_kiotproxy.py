@@ -70,6 +70,29 @@ def test_load_kiot_proxies_empty_when_all_fail(local_server):
     assert load_kiot_proxies(["badkey"], base_url=local_server) == []
 
 
+def test_fetch_current_proxy_parses_success(local_server):
+    from kiotproxy import fetch_current_proxy
+    assert fetch_current_proxy("goodkey", base_url=local_server) == Proxy(
+        server="http://127.0.0.1:39008"
+    )
+
+
+def test_load_kiot_proxies_falls_back_to_current_when_new_fails(local_server):
+    # "newfail" cannot get a new IP but has a current one, so it is still used.
+    proxies = load_kiot_proxies(["newfail"], base_url=local_server)
+    assert proxies == [Proxy(server="http://127.0.0.1:39008")]
+
+
+def test_load_kiot_proxies_skips_key_only_when_both_new_and_current_fail(local_server, caplog):
+    import logging
+    caplog.set_level(logging.WARNING)
+    # goodkey -> new ok; newfail -> current fallback; badkey -> both fail, skipped.
+    proxies = load_kiot_proxies(["goodkey", "newfail", "badkey"], base_url=local_server)
+    assert len(proxies) == 2
+    assert "badkey" not in caplog.text
+    assert mask_key("badkey") in caplog.text
+
+
 def test_load_keys_parses_lines_ignoring_comments_and_blanks(tmp_path: Path):
     path = tmp_path / "keys.txt"
     path.write_text("# my keys\n\n  Kabc123  \nKdef456\n", encoding="utf-8")

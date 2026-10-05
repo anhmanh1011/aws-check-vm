@@ -64,6 +64,27 @@ _FORM_HTML = """<!doctype html>
 """
 
 
+def _kiot_success(http: str) -> dict:
+    """A KiotProxy-shaped success body advertising ``http`` as the proxy."""
+    host, port = http.split(":")
+    return {
+        "data": {
+            "realIpAddress": host,
+            "http": http,
+            "socks5": f"{host}:39009",
+            "httpPort": int(port), "socks5Port": 39009,
+            "host": host, "location": "Test",
+            "expirationAt": 1718030731927, "ttl": 1200, "ttc": 59,
+        },
+        "success": True, "code": 200, "status": "SUCCESS",
+    }
+
+
+def _kiot_failure(code: int, error: str, message: str) -> dict:
+    """A KiotProxy-shaped failure body."""
+    return {"success": False, "code": code, "message": message, "status": "FAIL", "error": error}
+
+
 class _EchoHandler(BaseHTTPRequestHandler):
     """GET routes: ``/ip`` -> JSON origin, ``/page`` -> small HTML page,
     ``/slow`` -> 3 s delay, ``/boom`` -> 500, ``/proxies/new`` -> KiotProxy-shaped JSON (failure when key=badkey).
@@ -90,24 +111,24 @@ class _EchoHandler(BaseHTTPRequestHandler):
             self._send(500, "boom", "text/plain")
         elif self.path.startswith("/proxies/new"):
             key = parse_qs(urlsplit(self.path).query).get("key", [""])[0]
+            # "badkey" has no proxy at all; "newfail" cannot get a *new* one
+            # (resources busy) but still has a current one (tested via /current).
             if key == "badkey":
-                body = {
-                    "success": False, "code": 40400006,
-                    "message": "Key not found", "status": "FAIL",
-                    "error": "KEY_NOT_FOUND",
-                }
+                body = _kiot_failure(40400006, "KEY_NOT_FOUND", "Key not found")
+            elif key == "newfail":
+                body = _kiot_failure(40001178, "SYSTEM_IS_HAVING_TROUBLE_ALLOCATING_RESOURCES",
+                                     "resources busy")
             else:
-                body = {
-                    "data": {
-                        "realIpAddress": "127.0.0.1",
-                        "http": "127.0.0.1:39008",
-                        "socks5": "127.0.0.1:39009",
-                        "httpPort": 39008, "socks5Port": 39009,
-                        "host": "127.0.0.1", "location": "Test",
-                        "expirationAt": 1718030731927, "ttl": 1200, "ttc": 59,
-                    },
-                    "success": True, "code": 200, "status": "SUCCESS",
-                }
+                body = _kiot_success("127.0.0.1:39008")
+            self._send(200, json.dumps(body), "application/json")
+        elif self.path.startswith("/proxies/current"):
+            key = parse_qs(urlsplit(self.path).query).get("key", [""])[0]
+            # Only "badkey" has no current proxy; everyone else (incl. "newfail")
+            # does, so /current is a working fallback when /new fails.
+            if key == "badkey":
+                body = _kiot_failure(40400006, "KEY_NOT_FOUND", "Key not found")
+            else:
+                body = _kiot_success("127.0.0.1:39008")
             self._send(200, json.dumps(body), "application/json")
         else:
             self._send(404, "not found", "text/plain")

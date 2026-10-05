@@ -31,7 +31,7 @@ from kiotproxy import load_keys, load_kiot_proxies
 from models import RunState, TaskResult
 from proxy_manager import ProxyManager
 from tasks import load_tasks
-from utils import setup_logging, write_results
+from utils import setup_logging, write_results, write_split_outputs
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,17 @@ def _non_negative_int(value: str) -> int:
     return number
 
 
+def _screen_size(value: str) -> tuple[int, int]:
+    """Parse ``WxH`` (e.g. ``1920x1080``) into ``(width, height)``."""
+    try:
+        width, height = (int(part) for part in value.lower().split("x"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be WxH, e.g. 1920x1080") from None
+    if width < 1 or height < 1:
+        raise argparse.ArgumentTypeError("width and height must be >= 1")
+    return width, height
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Define the CLI. Kept separate from ``main`` so tests can inspect defaults."""
     parser = argparse.ArgumentParser(
@@ -60,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, default=Path("input.txt"),
                         help="text file, one data item per line; your handler decides what "
                              "each line means (default: %(default)s)")
-    parser.add_argument("--batch-size", type=_non_negative_int, default=1,
+    parser.add_argument("--batch-size", type=_non_negative_int, default=3,
                         help="lines per browser context: 1 = one context per line, N = fixed "
                              "batches of N, 0 = split evenly so each worker gets one batch "
                              "(default: %(default)s)")
@@ -73,8 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="KiotProxy region for --kiot-keys (default: %(default)s)")
     parser.add_argument("--concurrency", type=_positive_int, default=3,
                         help="number of concurrent workers / live contexts (default: %(default)s)")
+    parser.add_argument("--proxy-per-worker", action="store_true",
+                        help="pin each worker to one fixed proxy for the whole run instead of "
+                             "sharing proxies round-robin; auto-enabled by --kiot-keys")
+    parser.add_argument("--split-output", action="store_true",
+                        help="instead of the --output file, append each email to exists.txt / "
+                             "not_found.txt / error.txt (in --output's folder) by its check_VM "
+                             "status; error.txt holds 'email<TAB>reason'")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True,
                         help="run the browser headless (default: --headless)")
+    parser.add_argument("--screen-size", type=_screen_size, default=None, metavar="WxH",
+                        help="screen size for tiling headed windows, e.g. 1920x1080 "
+                             "(default: auto-detect)")
     parser.add_argument("--output", type=Path, default=Path("results.json"),
                         help="results file; .json or .csv (default: %(default)s)")
     parser.add_argument("--handler", default=DEFAULT_HANDLER,
@@ -123,16 +144,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError(
                 f"unsupported output extension {args.output.suffix!r} (use .json or .csv)"
             )
+        concurrency = args.concurrency
+        proxy_per_worker = args.proxy_per_worker
         if args.kiot_keys is not None:
             # --kiot-keys replaces proxies.txt: fetch one IP per key up front
-            # and build the same round-robin pool the engine already expects.
-            # Done before load_tasks so a bad key file fails fast with its
-            # own message instead of being masked by an unrelated input error.
+            # and build the same pool the engine already expects. Done before
+            # load_tasks so a bad key file fails fast with its own message
+            # instead of being masked by an unrelated input error.
             keys = load_keys(args.kiot_keys)
             proxy_manager = ProxyManager(load_kiot_proxies(keys, args.kiot_region))
+            # One KiotProxy key = one IP, so give each proxy its own worker and
+            # pin it there: N proxies -> N workers, each browser lane on a fixed
+            # IP. This overrides --concurrency. With no usable proxy, fall back
+            # to a single direct worker.
+            proxy_per_worker = True
+            concurrency = len(proxy_manager) or 1
+            log.info(
+                "KiotProxy: %d proxy(ies) -> %d worker(s), one proxy per browser",
+                len(proxy_manager), concurrency,
+            )
         else:
             proxy_manager = ProxyManager.from_file(args.proxies)
-        tasks = load_tasks(args.input, batch_size=args.batch_size, concurrency=args.concurrency)
+        tasks = load_tasks(args.input, batch_size=args.batch_size, concurrency=concurrency)
         handler = load_handler(args.handler)
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -143,10 +176,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         tasks,
         proxy_manager,
         handler,
-        concurrency=args.concurrency,
+        concurrency=concurrency,
         headless=args.headless,
         timeout_s=args.timeout,
         state=state,
+        proxy_per_worker=proxy_per_worker,
+        screen_size=args.screen_size,
     )
     dashboard = Dashboard(state) if use_dashboard else None
 
@@ -171,14 +206,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Partial results are still valuable after an interrupt or a crash.
     results = state.results
-    try:
-        write_results(results, args.output)
-    except (OSError, ValueError) as exc:
-        print(f"error: could not write results to {args.output}: {exc}", file=sys.stderr)
-        if exit_code == 0:
-            exit_code = 1
+    if args.split_output:
+        # Replace results.json with the three append files, next to --output.
+        out_dir = args.output.parent
+        destination = f"{out_dir / 'exists.txt'}, not_found.txt, error.txt"
+        try:
+            write_split_outputs(results, out_dir)
+        except OSError as exc:
+            print(f"error: could not write split outputs to {out_dir}: {exc}", file=sys.stderr)
+            if exit_code == 0:
+                exit_code = 1
+    else:
+        destination = str(args.output)
+        try:
+            write_results(results, args.output)
+        except (OSError, ValueError) as exc:
+            print(f"error: could not write results to {args.output}: {exc}", file=sys.stderr)
+            if exit_code == 0:
+                exit_code = 1
     failed = sum(1 for result in results if result.status != "ok")
-    print(f"{len(results)}/{len(tasks)} tasks finished, {failed} failed -> {args.output}")
+    print(f"{len(results)}/{len(tasks)} tasks finished, {failed} failed -> {destination}")
 
     if exit_code == 0 and (failed or len(results) != len(tasks)):
         exit_code = 1
